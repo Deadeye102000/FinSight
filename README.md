@@ -1,2 +1,3 @@
 # FinSight
-MCP - assisted financial agent 
+
+Production-grade AI stock research agent built incrementally with MCP, Claude, FastAPI, and Streamlit.
