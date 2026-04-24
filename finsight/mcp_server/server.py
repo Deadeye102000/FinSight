@@ -7,6 +7,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from finsight.mcp_server.tools.fundamentals import get_fundamentals as get_fundamentals_tool
 from finsight.mcp_server.tools.price import get_stock_price as get_stock_price_tool
 
 
@@ -24,6 +25,13 @@ def get_stock_price(ticker: str, period: str = "3mo", interval: str = "1d") -> d
     """Return recent market data and technical indicators for a stock ticker."""
     logger.info("MCP tool invocation received for %s", ticker)
     return get_stock_price_tool(ticker=ticker, period=period, interval=interval)
+
+
+@server.tool()
+def get_fundamentals(ticker: str) -> dict[str, Any]:
+    """Return valuation and financial-ratio fundamentals for a stock ticker."""
+    logger.info("MCP fundamentals invocation received for %s", ticker)
+    return get_fundamentals_tool(ticker=ticker)
 
 
 def main() -> None:
