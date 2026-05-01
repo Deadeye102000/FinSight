@@ -26,6 +26,11 @@ def validate_period(period: str) -> bool:
     return period in ALLOWED_PERIODS
 
 
+def validate_n(n: int) -> bool:
+    """Return ``True`` when a result count is within FinSight's supported bounds."""
+    return isinstance(n, int) and 1 <= n <= 50
+
+
 def validate_symbol(symbol: str) -> str:
     """Validate and normalize a stock ticker symbol."""
     normalized = symbol.strip().upper()

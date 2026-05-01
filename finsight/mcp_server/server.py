@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 
 from finsight.mcp_server.tools.fundamentals import get_fundamentals as get_fundamentals_tool
 from finsight.mcp_server.tools.price import get_stock_price as get_stock_price_tool
+from finsight.mcp_server.tools.sentiment import get_news_sentiment as get_news_sentiment_tool
 
 
 logging.basicConfig(
@@ -32,6 +33,13 @@ def get_fundamentals(ticker: str) -> dict[str, Any]:
     """Return valuation and financial-ratio fundamentals for a stock ticker."""
     logger.info("MCP fundamentals invocation received for %s", ticker)
     return get_fundamentals_tool(ticker=ticker)
+
+
+@server.tool()
+def get_news_sentiment(ticker: str, company_name: str, n: int = 10) -> dict[str, Any]:
+    """Return recent headline sentiment for a stock ticker using local FinBERT."""
+    logger.info("MCP news sentiment invocation received for %s", ticker)
+    return get_news_sentiment_tool(ticker=ticker, company_name=company_name, n=n)
 
 
 def main() -> None:
