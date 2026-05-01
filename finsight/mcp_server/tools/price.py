@@ -166,6 +166,28 @@ def _slice_requested_history(history: pd.DataFrame, user_period: str) -> pd.Data
     return history.tail(period_to_business_days[user_period])
 
 
+def _empty_price_result(ticker: str, currency: str, error: str | None) -> dict[str, Any]:
+    """Return a stable stock-price payload shape."""
+    return {
+        "ticker": ticker,
+        "current_price": 0.0,
+        "currency": currency,
+        "reporting_currency": currency,
+        "normalized_currency": currency,
+        "price_change_pct_30d": 0.0,
+        "high_52w": 0.0,
+        "low_52w": 0.0,
+        "avg_volume_10d": 0,
+        "rsi_14": 0.0,
+        "macd_signal": "neutral",
+        "ma_50": 0.0,
+        "ma_200": 0.0,
+        "golden_cross": False,
+        "ohlcv_last_5": [],
+        "error": error,
+    }
+
+
 def get_stock_price(ticker: str, period: str = "3mo", interval: str = "1d") -> dict[str, Any]:
     """Fetch OHLCV data and technical indicators for a stock ticker."""
     logger.info("Processing stock price request for ticker=%s period=%s interval=%s", ticker, period, interval)
@@ -174,43 +196,17 @@ def get_stock_price(ticker: str, period: str = "3mo", interval: str = "1d") -> d
         request = StockPriceRequest(ticker=ticker, period=period, interval=interval)
     except ValidationError as exc:
         logger.warning("Validation failed for ticker=%s: %s", ticker, exc)
-        return {
-            "ticker": ticker,
-            "current_price": 0.0,
-            "currency": "",
-            "price_change_pct_30d": 0.0,
-            "high_52w": 0.0,
-            "low_52w": 0.0,
-            "avg_volume_10d": 0,
-            "rsi_14": 0.0,
-            "macd_signal": "neutral",
-            "ma_50": 0.0,
-            "ma_200": 0.0,
-            "golden_cross": False,
-            "ohlcv_last_5": [],
-            "error": exc.errors()[0]["msg"],
-        }
+        return _empty_price_result(ticker, "", exc.errors()[0]["msg"])
 
     try:
         fetch_period = _resolve_fetch_period(request.period)
         history, currency = _fetch_history(request.ticker, fetch_period, request.interval)
         if history.empty:
-            return {
-                "ticker": request.ticker,
-                "current_price": 0.0,
-                "currency": currency,
-                "price_change_pct_30d": 0.0,
-                "high_52w": 0.0,
-                "low_52w": 0.0,
-                "avg_volume_10d": 0,
-                "rsi_14": 0.0,
-                "macd_signal": "neutral",
-                "ma_50": 0.0,
-                "ma_200": 0.0,
-                "golden_cross": False,
-                "ohlcv_last_5": [],
-                "error": f"No price data found for ticker '{request.ticker}'.",
-            }
+            return _empty_price_result(
+                request.ticker,
+                currency,
+                f"No price data found for ticker '{request.ticker}'.",
+            )
 
         requested_history = _slice_requested_history(history, request.period)
         technical_history = history
@@ -243,9 +239,8 @@ def get_stock_price(ticker: str, period: str = "3mo", interval: str = "1d") -> d
             )
 
         result = {
-            "ticker": request.ticker,
+            **_empty_price_result(request.ticker, currency, None),
             "current_price": round(latest_close, 2),
-            "currency": currency,
             "price_change_pct_30d": price_change_pct_30d,
             "high_52w": round(_safe_float(trailing_year["High"].max()), 2),
             "low_52w": round(_safe_float(trailing_year["Low"].min()), 2),
@@ -262,19 +257,4 @@ def get_stock_price(ticker: str, period: str = "3mo", interval: str = "1d") -> d
         return result
     except Exception as exc:  # pragma: no cover - network/provider issues
         logger.exception("Failed to fetch stock price data for %s", request.ticker)
-        return {
-            "ticker": request.ticker,
-            "current_price": 0.0,
-            "currency": "",
-            "price_change_pct_30d": 0.0,
-            "high_52w": 0.0,
-            "low_52w": 0.0,
-            "avg_volume_10d": 0,
-            "rsi_14": 0.0,
-            "macd_signal": "neutral",
-            "ma_50": 0.0,
-            "ma_200": 0.0,
-            "golden_cross": False,
-            "ohlcv_last_5": [],
-            "error": str(exc),
-        }
+        return _empty_price_result(request.ticker, "", str(exc))
