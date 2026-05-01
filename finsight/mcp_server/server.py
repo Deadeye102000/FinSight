@@ -7,6 +7,9 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from finsight.mcp_server.tools.announcements import (
+    get_corporate_announcements as get_corporate_announcements_tool,
+)
 from finsight.mcp_server.tools.fundamentals import get_fundamentals as get_fundamentals_tool
 from finsight.mcp_server.tools.price import get_stock_price as get_stock_price_tool
 from finsight.mcp_server.tools.sentiment import get_news_sentiment as get_news_sentiment_tool
@@ -40,6 +43,17 @@ def get_news_sentiment(ticker: str, company_name: str, n: int = 10) -> dict[str,
     """Return recent headline sentiment for a stock ticker using local FinBERT."""
     logger.info("MCP news sentiment invocation received for %s", ticker)
     return get_news_sentiment_tool(ticker=ticker, company_name=company_name, n=n)
+
+
+@server.tool()
+def get_corporate_announcements(ticker: str, announcement_type: str = "all", n: int = 10) -> dict[str, Any]:
+    """Return recent BSE/NSE corporate announcements summarized for investors."""
+    logger.info("MCP corporate announcements invocation received for %s", ticker)
+    return get_corporate_announcements_tool(
+        ticker=ticker,
+        announcement_type=announcement_type,
+        n=n,
+    )
 
 
 def main() -> None:
