@@ -12,7 +12,7 @@ This file is intentionally grounded in the current codebase. If a feature is not
 
 **Current answer:**
 
-MCP is a protocol for exposing tools through a separate server process so an agent can discover and call them through a standard interface. Regular Anthropic function calling means passing tool schemas directly to the Anthropic API and handling `tool_use` blocks inside the same application process. I chose MCP for FinSight because the financial data tools are already isolated behind a dedicated server: `finsight/mcp_server/server.py` creates a `FastMCP("FinSight")` server at line 24 and registers tools with `@server.tool()` at lines 27, 34, 41, and 48. The tradeoff is extra process/transport complexity: right now the server runs over stdio at `finsight/mcp_server/server.py:59-62`, while `finsight/agent/orchestrator.py:1-8` is still only an Anthropic client placeholder and does not yet connect to MCP.
+MCP is a protocol for exposing tools through a separate server process so an agent can discover and call them through a standard interface. Regular Anthropic function calling means passing tool schemas directly to the Anthropic API and handling `tool_use` blocks inside the same application process. I chose MCP for FinSight because the financial data tools are already isolated behind a dedicated server: `finsight/mcp_server/server.py` creates a `FastMCP("FinSight")` server at line 25 and registers tools with `@server.tool()` at lines 28, 35, 42, 49, and 60. The tradeoff is extra process/transport complexity: right now the server runs over stdio at `finsight/mcp_server/server.py:67-70`, while `finsight/agent/orchestrator.py:1-8` is still only an Anthropic client placeholder and does not yet connect to MCP.
 
 **Interview-safe phrasing today:**
 
@@ -32,7 +32,7 @@ What exists today:
 2. FastAPI does not yet expose a research endpoint. It only exposes `GET /health` in `finsight/api/main.py:9-12`.
 3. `FinSightAgent.research()` does not exist yet. `finsight/agent/orchestrator.py:6-8` only returns an `Anthropic()` client placeholder.
 4. There is no system prompt yet in `orchestrator.py`.
-5. The MCP server tools that would eventually be called are already registered in `finsight/mcp_server/server.py:27-56`.
+5. The MCP server tools that would eventually be called are already registered in `finsight/mcp_server/server.py:28-64`.
 
 **What the future flow should become after Step 8:**
 
@@ -40,8 +40,8 @@ What exists today:
 2. Streamlit should POST to a FastAPI research endpoint in `finsight/api/main.py`.
 3. That endpoint should call `FinSightAgent.research()` in `finsight/agent/orchestrator.py`.
 4. Claude should receive a system prompt that forces it to use tool outputs rather than inventing financial data.
-5. For "Analyse TCS stock", the likely first tools are `get_stock_price`, `get_fundamentals`, `get_news_sentiment`, and `get_corporate_announcements`: price gives technicals, fundamentals gives valuation, sentiment gives news tone, and announcements gives India-specific corporate actions.
-6. The MCP server routes those calls through `finsight/mcp_server/server.py:27-56` to the implementations in `finsight/mcp_server/tools/`.
+5. For "Analyse TCS stock", the likely first tools are `get_stock_price`, `get_fundamentals`, `get_news_sentiment`, `get_corporate_announcements`, and possibly `compare_peers`: price gives technicals, fundamentals gives valuation, sentiment gives news tone, announcements gives India-specific corporate actions, and peers adds relative context.
+6. The MCP server routes those calls through `finsight/mcp_server/server.py:28-64` to the implementations in `finsight/mcp_server/tools/`.
 7. `yfinance` is called in `price.py:127-146` and `fundamentals.py:149-153`; BSE/NSE APIs are called in `announcements.py:125-149` and `announcements.py:308-332`.
 8. Claude should synthesize a `ResearchReport`.
 9. FastAPI should return JSON and Streamlit should render sections or tabs.
@@ -54,7 +54,7 @@ What exists today:
 
 **Current answer: partial implementation, agent guardrails pending.**
 
-A) **Grounding:** Today, the data grounding exists at the tool layer, not yet at the agent layer. The tools fetch real provider data: price history from `yf.Ticker(...).history(...)` in `finsight/mcp_server/tools/price.py:127-146`, fundamentals from `yf.Ticker(ticker).info` in `finsight/mcp_server/tools/fundamentals.py:149-153`, NewsAPI headlines in `finsight/mcp_server/tools/sentiment.py:106-122`, and BSE/NSE announcements in `finsight/mcp_server/tools/announcements.py:125-149` plus `announcements.py:308-332`. The system prompt constraint that tells Claude "only use returned tool data" is not implemented yet because `orchestrator.py` is still a placeholder at `finsight/agent/orchestrator.py:1-8`.
+A) **Grounding:** Today, the data grounding exists at the tool layer, not yet at the agent layer. The tools fetch real provider data: price history from `yf.Ticker(...).history(...)` in `finsight/mcp_server/tools/price.py:127-146`, fundamentals from `yf.Ticker(ticker).info` in `finsight/mcp_server/tools/fundamentals.py:149-153`, NewsAPI headlines in `finsight/mcp_server/tools/sentiment.py:106-122`, BSE/NSE announcements in `finsight/mcp_server/tools/announcements.py:125-149` plus `announcements.py:308-332`, and peer comparison by calling the existing price/fundamentals tools in `finsight/mcp_server/tools/peers.py:75-104`. The system prompt constraint that tells Claude "only use returned tool data" is not implemented yet because `orchestrator.py` is still a placeholder at `finsight/agent/orchestrator.py:1-8`.
 
 B) **Error propagation:** Every implemented tool returns an `error` field in its stable payload. Examples: price `_empty_price_result` includes `error` at `price.py:169-188`, fundamentals `_empty_result` includes `error` at `fundamentals.py:51-81`, sentiment `_empty_result` includes `error` at `sentiment.py:68-83`, and announcements `_empty_result` includes `error` at `announcements.py:152-168`. The future orchestrator should instruct Claude to surface these errors instead of filling missing metrics.
 
@@ -88,7 +88,7 @@ FinBERT only returns positive, negative, or neutral. It does not explain why a h
 
 **Current state:**
 
-Right now FinSight does not have API rate limiting. `finsight/api/main.py:6-12` only defines the FastAPI app and a health check. Tool-level caching exists in specific places: yfinance history is cached with `@lru_cache(maxsize=64)` in `price.py:127-128`, fundamentals data is cached in `fundamentals.py:149-169`, FinBERT is cached as a module-level pipeline in `sentiment.py:23` and `sentiment.py:58-65`, and announcements use a 30-minute module-level cache in `announcements.py:68` and `announcements.py:543-547`.
+Right now FinSight does not have API rate limiting. `finsight/api/main.py:6-12` only defines the FastAPI app and a health check. Tool-level caching exists in specific places: yfinance history is cached with `@lru_cache(maxsize=64)` in `price.py:127-128`, fundamentals data is cached in `fundamentals.py:149-169`, FinBERT is cached as a module-level pipeline in `sentiment.py:23` and `sentiment.py:58-65`, and announcements use a 30-minute module-level cache in `announcements.py:68` and `announcements.py:543-547`. Peer comparison itself is concurrent rather than cached; it calls the underlying tools across tickers with `asyncio.gather` in `peers.py:112-114`.
 
 **Path to scale:**
 
@@ -136,13 +136,13 @@ Three things. First, I would finish the agent/API/UI flow because right now the 
 
 ## Quick-fire answers (30 seconds each)
 
-- **"What does stdio transport mean in MCP?"** → The MCP server communicates over standard input and output instead of HTTP. In FinSight, `server.run(transport="stdio")` is at `finsight/mcp_server/server.py:59-62`, which is simple for local agent-server wiring but not ideal for browser clients or horizontally scaled services.
+- **"What does stdio transport mean in MCP?"** → The MCP server communicates over standard input and output instead of HTTP. In FinSight, `server.run(transport="stdio")` is at `finsight/mcp_server/server.py:67-70`, which is simple for local agent-server wiring but not ideal for browser clients or horizontally scaled services.
 
 - **"What is Wilder's RSI and why 14 periods?"** → RSI measures average gains versus average losses to estimate overbought or oversold momentum. FinSight computes Wilder-style smoothing manually in `price.py:66-90` and uses 14 periods in the result at `price.py:248` because 14 is the common default traders expect.
 
 - **"What is a golden cross and why does it matter?"** → A golden cross is when a shorter moving average is above a longer moving average, often read as bullish trend confirmation. FinSight computes 50-day and 200-day moving averages at `price.py:225-226` and sets `golden_cross` with `ma_50 > ma_200` at `price.py:250-252`.
 
-- **"Why asyncio.gather and not threading for peer comparison?"** → Peer comparison is not implemented yet; `finsight/mcp_server/tools/peers.py` is still a placeholder. When it is built, `asyncio.gather` would fit because peer fetches are mostly network I/O, not CPU-bound work.
+- **"Why asyncio.gather and not threading for peer comparison?"** → Peer comparison fetches several tickers at once, and each fetch is mostly provider I/O through the existing price and fundamentals tools. In `finsight/mcp_server/tools/peers.py:107-114`, I wrap the synchronous per-ticker fetch in `asyncio.to_thread()` and run those tasks with `asyncio.gather`, so the implementation reuses existing sync tools while avoiding sequential network waits.
 
 - **"What is the difference between pe_ratio and peg_ratio?"** → P/E compares price to earnings, while PEG adjusts P/E by expected growth. FinSight returns both from Yahoo fields: `trailingPE` maps to `pe_ratio` and `pegRatio` maps to `peg_ratio` in `fundamentals.py:248-260`.
 
@@ -172,7 +172,7 @@ These answers will end your interview:
 
 ## One-line project pitch (memorise this)
 
-"FinSight is an AI research agent project for analysing Indian and US stocks together — fundamentals, technicals, news sentiment, and Indian corporate announcements — using Anthropic's MCP protocol with a local FinBERT model for zero-cost sentiment. I built it to understand how to design multi-tool LLM agents for real financial data, and the current codebase has the tools working while the full agent/UI orchestration is still being built."
+"FinSight is an AI research agent project for analysing Indian and US stocks together — fundamentals, technicals, news sentiment, Indian corporate announcements, and peer comparison — using Anthropic's MCP protocol with a local FinBERT model for zero-cost sentiment. I built it to understand how to design multi-tool LLM agents for real financial data, and the current codebase has the tools working while the full agent/UI orchestration is still being built."
 
 The last sentence matters: it shows intellectual honesty and learning orientation, which senior interviewers respect more than overselling.
 
@@ -188,4 +188,3 @@ Known pending updates:
 - After Step 8, update Q2 with the real Streamlit -> FastAPI -> agent -> MCP -> report flow.
 - After benchmarks are added, update Q4 with measured FinBERT accuracy, latency, and cost comparisons from `benchmarks/results.json`.
 - After report schema work, update Q3 with the real `ResearchReport` disclaimer field and line number.
-- After peer comparison is implemented, update the quick-fire answer about `asyncio.gather`.

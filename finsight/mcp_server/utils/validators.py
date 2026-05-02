@@ -31,6 +31,25 @@ def validate_n(n: int) -> bool:
     return isinstance(n, int) and 1 <= n <= 50
 
 
+def validate_peers_list(peers: list) -> bool:
+    """Return ``True`` when peer tickers are unique and within supported bounds."""
+    if not isinstance(peers, list):
+        return False
+    if not 2 <= len(peers) <= 5:
+        return False
+
+    normalized: list[str] = []
+    for peer in peers:
+        if not isinstance(peer, str):
+            return False
+        symbol = peer.strip().upper()
+        if not symbol or not validate_ticker(symbol):
+            return False
+        normalized.append(symbol)
+
+    return len(set(normalized)) == len(normalized)
+
+
 def validate_symbol(symbol: str) -> str:
     """Validate and normalize a stock ticker symbol."""
     normalized = symbol.strip().upper()

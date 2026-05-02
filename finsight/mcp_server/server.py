@@ -11,6 +11,7 @@ from finsight.mcp_server.tools.announcements import (
     get_corporate_announcements as get_corporate_announcements_tool,
 )
 from finsight.mcp_server.tools.fundamentals import get_fundamentals as get_fundamentals_tool
+from finsight.mcp_server.tools.peers import compare_peers as compare_peers_tool
 from finsight.mcp_server.tools.price import get_stock_price as get_stock_price_tool
 from finsight.mcp_server.tools.sentiment import get_news_sentiment as get_news_sentiment_tool
 
@@ -54,6 +55,13 @@ def get_corporate_announcements(ticker: str, announcement_type: str = "all", n: 
         announcement_type=announcement_type,
         n=n,
     )
+
+
+@server.tool()
+def compare_peers(ticker: str, peers: list[str], include_sentiment: bool = False) -> dict[str, Any]:
+    """Return a structured peer comparison across valuation and quality metrics."""
+    logger.info("MCP peer comparison invocation received for %s", ticker)
+    return compare_peers_tool(ticker=ticker, peers=peers, include_sentiment=include_sentiment)
 
 
 def main() -> None:

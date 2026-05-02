@@ -12,10 +12,7 @@ Registered MCP tools:
 - `get_fundamentals`
 - `get_news_sentiment`
 - `get_corporate_announcements`
-
-Scaffolded but not yet registered as MCP tools:
-
-- peers
+- `compare_peers`
 
 Application scaffolds:
 
@@ -123,6 +120,32 @@ Output includes:
 
 Results are cached in-process by ticker and announcement type for 30 minutes. Claude Haiku is used when `ANTHROPIC_API_KEY` is configured; otherwise the tool returns a deterministic local summary.
 
+### `compare_peers`
+
+Compares a main ticker against 2 to 5 peer tickers by calling the existing price and fundamentals tools concurrently. Sentiment can also be included when needed, but it is optional because it is slower.
+
+Input:
+
+- `ticker: str`
+- `peers: list[str]` with 2 to 5 unique peer tickers
+- `include_sentiment: bool = False`
+
+Output includes:
+
+- comparison date
+- metrics compared
+- per-metric rankings
+- overall winner
+- summary table with valuation, profitability, leverage, RSI, and optional sentiment fields
+- relative valuation summary
+- `error`
+
+Ranking rules:
+
+- lower is better for `pe_ratio`, `pb_ratio`, and `debt_to_equity`
+- higher is better for `roe`, `gross_margin`, `net_margin`, and RSI below 70
+- composite score is based on per-metric ranks; the lower total is better
+
 ## Currency Semantics
 
 FinSight is designed to be market-agnostic. It supports native exchange tickers while making currency handling explicit in response payloads.
@@ -223,6 +246,12 @@ Run the corporate announcements test suite:
 
 ```bash
 .venv/bin/pytest tests/test_announcements.py -v --tb=short
+```
+
+Run the peer comparison test suite:
+
+```bash
+.venv/bin/pytest tests/test_peers.py -v --tb=short
 ```
 
 The first sentiment run may take longer because `ProsusAI/finbert` is downloaded and cached locally.
