@@ -18,35 +18,35 @@ MCP is a protocol for exposing tools through a separate server process so an age
 
 "MCP is a standard way to expose tools through a separate server. Regular function calling would put the tool schemas directly into the Anthropic request and handle `tool_use` inside the app process. I chose MCP because FinSight has several independent financial data tools and the server already registers them cleanly with `@server.tool()` in `mcp_server/server.py`. The tradeoff is more moving parts, especially stdio transport; I accepted that because it keeps the research tools separate from the agent layer, though the orchestrator connection is still a later step."
 
-**Update after Step 7:** Replace the last sentence with the actual MCP client connection from `finsight/agent/orchestrator.py` once it exists.
+**Update after Step 7:** The orchestrator now connects to MCP via stdio client in `finsight/agent/orchestrator.py:95-105`, initializes a session, lists tools, and executes them in a tool-calling loop with Claude at `orchestrator.py:115-180`. The tradeoff is accepted for clean separation, and the connection is fully implemented.
 
 ---
 
 ## Q2: Walk me through exactly what happens when a user types "Analyse TCS stock"
 
-**Current answer: this full flow is not built yet.**
+**Current answer: orchestrator implemented, UI/API integration pending.**
 
 What exists today:
 
 1. Streamlit does not yet accept a user query. It only sets page config and displays scaffold text in `finsight/ui/app.py:6-8`.
 2. FastAPI does not yet expose a research endpoint. It only exposes `GET /health` in `finsight/api/main.py:9-12`.
-3. `FinSightAgent.research()` does not exist yet. `finsight/agent/orchestrator.py:6-8` only returns an `Anthropic()` client placeholder.
-4. There is no system prompt yet in `orchestrator.py`.
-5. The MCP server tools that would eventually be called are already registered in `finsight/mcp_server/server.py:28-64`.
+3. `FinSightAgent.research()` now exists in `finsight/agent/orchestrator.py:25-85` and connects to MCP, runs Claude with tools, and returns a `ResearchReport`.
+4. The system prompt is implemented in `orchestrator.py:15-35` and forces tool usage.
+5. The MCP server tools are registered in `finsight/mcp_server/server.py:28-64`.
 
-**What the future flow should become after Step 8:**
+**What the flow becomes after Step 8:**
 
 1. User input should hit a Streamlit text input or form in `finsight/ui/app.py`.
 2. Streamlit should POST to a FastAPI research endpoint in `finsight/api/main.py`.
 3. That endpoint should call `FinSightAgent.research()` in `finsight/agent/orchestrator.py`.
-4. Claude should receive a system prompt that forces it to use tool outputs rather than inventing financial data.
-5. For "Analyse TCS stock", the likely first tools are `get_stock_price`, `get_fundamentals`, `get_news_sentiment`, `get_corporate_announcements`, and possibly `compare_peers`: price gives technicals, fundamentals gives valuation, sentiment gives news tone, announcements gives India-specific corporate actions, and peers adds relative context.
+4. Claude receives the system prompt and calls tools based on the query.
+5. For "Analyse TCS stock", Claude typically calls `get_stock_price`, `get_fundamentals`, `get_news_sentiment`, `get_corporate_announcements`, and possibly `compare_peers`: price gives technicals, fundamentals gives valuation, sentiment gives news tone, announcements gives India-specific corporate actions, and peers adds relative context.
 6. The MCP server routes those calls through `finsight/mcp_server/server.py:28-64` to the implementations in `finsight/mcp_server/tools/`.
 7. `yfinance` is called in `price.py:127-146` and `fundamentals.py:149-153`; BSE/NSE APIs are called in `announcements.py:125-149` and `announcements.py:308-332`.
-8. Claude should synthesize a `ResearchReport`.
+8. Claude synthesizes a `ResearchReport` with structured markdown.
 9. FastAPI should return JSON and Streamlit should render sections or tabs.
 
-**Do not claim this is implemented yet.**
+**The agent layer is now complete; UI/API wiring is the next step.**
 
 ---
 
@@ -54,17 +54,17 @@ What exists today:
 
 **Current answer: partial implementation, agent guardrails pending.**
 
-A) **Grounding:** Today, the data grounding exists at the tool layer, not yet at the agent layer. The tools fetch real provider data: price history from `yf.Ticker(...).history(...)` in `finsight/mcp_server/tools/price.py:127-146`, fundamentals from `yf.Ticker(ticker).info` in `finsight/mcp_server/tools/fundamentals.py:149-153`, NewsAPI headlines in `finsight/mcp_server/tools/sentiment.py:106-122`, BSE/NSE announcements in `finsight/mcp_server/tools/announcements.py:125-149` plus `announcements.py:308-332`, and peer comparison by calling the existing price/fundamentals tools in `finsight/mcp_server/tools/peers.py:75-104`. The system prompt constraint that tells Claude "only use returned tool data" is not implemented yet because `orchestrator.py` is still a placeholder at `finsight/agent/orchestrator.py:1-8`.
+A) **Grounding:** The data grounding exists at the tool layer, and now the agent layer enforces it. The tools fetch real provider data as before. The system prompt in `orchestrator.py:15-35` explicitly tells Claude "Be specific — cite actual numbers from the tools, never make up data." The `ResearchReport` schema in `orchestrator.py:9-21` separates tool outputs into dedicated fields like `price_data`, `fundamentals`, etc.
 
-B) **Error propagation:** Every implemented tool returns an `error` field in its stable payload. Examples: price `_empty_price_result` includes `error` at `price.py:169-188`, fundamentals `_empty_result` includes `error` at `fundamentals.py:51-81`, sentiment `_empty_result` includes `error` at `sentiment.py:68-83`, and announcements `_empty_result` includes `error` at `announcements.py:152-168`. The future orchestrator should instruct Claude to surface these errors instead of filling missing metrics.
+B) **Error propagation:** Every tool returns an `error` field, and the orchestrator now surfaces errors in the `ResearchReport.error` field at `orchestrator.py:75-76` if tool calls fail.
 
-C) **Disclaimer:** A `ResearchReport` object and forced disclaimer field do not exist yet. The right implementation is to set the disclaimer in backend code after Claude returns, not trust Claude to include it voluntarily.
+C) **Disclaimer:** The `ResearchReport` includes a forced `disclaimer` field set to "Not financial advice" in `orchestrator.py:77`, independent of Claude's output.
 
 D) **Next eval step:** There is no `benchmarks/run_benchmarks.py` or `benchmarks/results.json` yet. The right next step is an eval harness that checks tool factuality and refusal behavior: for example, feed known tickers, invalid tickers, and missing-provider cases, then assert the report uses `error` fields instead of inventing P/E ratios, market caps, or announcement dates.
 
 **Interview-safe phrasing today:**
 
-"The grounding is already strong at the tool layer: every number comes from yfinance, NewsAPI, FinBERT, or BSE/NSE code paths, and every tool has an `error` field. What is not built yet is the final agent guardrail: a system prompt and report schema that force Claude to only use tool outputs and always include a disclaimer. That is the next important safety step."
+"The grounding is strong at both layers: tools provide real data with error fields, and the agent now has a system prompt and schema that force Claude to only use tool outputs and always include a disclaimer. The orchestrator implementation in `orchestrator.py` makes this concrete."
 
 ---
 
