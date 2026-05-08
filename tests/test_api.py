@@ -1,12 +1,13 @@
 """Tests for FinSight API."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
 from httpx import ASGITransport
 import pytest
 
-from finsight.api.main import app, rate_limit_store
+from finsight.api.main import app, global_exception_handler, rate_limit_store
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +89,79 @@ async def test_price_tool_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_fundamentals_tool_endpoint_success():
+    """POST /tools/fundamentals returns wrapped tool data."""
+    with patch("finsight.api.main.get_fundamentals", return_value={"pe_ratio": 22}):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.post("/tools/fundamentals", json={"ticker": "AAPL"})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["pe_ratio"] == 22
+
+
+@pytest.mark.asyncio
+async def test_sentiment_tool_endpoint_success():
+    """POST /tools/sentiment returns wrapped tool data."""
+    with patch("finsight.api.main.get_news_sentiment", return_value={"overall_sentiment": "Neutral"}):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.post("/tools/sentiment", json={"ticker": "AAPL", "company_name": "Apple"})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["overall_sentiment"] == "Neutral"
+
+
+@pytest.mark.asyncio
+async def test_filings_tool_endpoint_success():
+    """POST /tools/filings returns wrapped tool data."""
+    with patch("finsight.api.main.get_corporate_announcements", return_value={"source": "BSE"}):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.post("/tools/filings", json={"ticker": "TCS.NS"})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["source"] == "BSE"
+
+
+@pytest.mark.asyncio
+async def test_peers_tool_endpoint_success():
+    """POST /tools/peers returns wrapped tool data."""
+    with patch("finsight.api.main.compare_peers", return_value={"winner_overall": "AAPL"}):
+        transport = ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.post("/tools/peers", json={"ticker": "AAPL", "peers": ["MSFT", "GOOGL"]})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["winner_overall"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_tool_endpoint_failures_are_wrapped():
+    """Tool exceptions return success=False payloads without stack traces."""
+    endpoint_to_patch = {
+        "/tools/price": "get_stock_price",
+        "/tools/fundamentals": "get_fundamentals",
+        "/tools/sentiment": "get_news_sentiment",
+        "/tools/filings": "get_corporate_announcements",
+        "/tools/peers": "compare_peers",
+    }
+    transport = ASGITransport(app=app)
+
+    for endpoint, target in endpoint_to_patch.items():
+        rate_limit_store.clear()
+        with patch(f"finsight.api.main.{target}", side_effect=Exception("provider failed")):
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+                response = await ac.post(endpoint, json={"ticker": "AAPL", "peers": ["MSFT", "GOOGL"]})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is False
+        assert data["error"] == "provider failed"
+        assert "traceback" not in str(data).lower()
+
+
+@pytest.mark.asyncio
 async def test_request_id_header_present():
     """Every response has X-Request-ID header."""
     transport = ASGITransport(app=app)
@@ -131,6 +205,21 @@ async def test_invalid_tool_ticker():
 
 
 @pytest.mark.asyncio
+async def test_invalid_tool_ticker_all_tool_endpoints():
+    """All direct tool endpoints reject blank tickers."""
+    transport = ASGITransport(app=app)
+    endpoints = ["/tools/price", "/tools/sentiment", "/tools/filings", "/tools/peers"]
+
+    for endpoint in endpoints:
+        rate_limit_store.clear()
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            response = await ac.post(endpoint, json={"ticker": "", "peers": ["MSFT", "GOOGL"]})
+
+        assert response.status_code == 400
+        assert response.json()["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_error_no_stack_trace():
     """Cause an error, assert "traceback" not in response body."""
     with patch("finsight.api.main.agent.research", side_effect=Exception("Test error")):
@@ -141,3 +230,15 @@ async def test_error_no_stack_trace():
             data = response.json()
             assert data["success"] is False
             assert "traceback" not in data["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_global_exception_handler_returns_safe_payload():
+    """Unhandled exceptions are converted to generic JSON errors."""
+    request = SimpleNamespace(state=SimpleNamespace())
+
+    response = await global_exception_handler(request, RuntimeError("sensitive failure"))
+
+    assert response.status_code == 500
+    assert b"Internal server error" in response.body
+    assert b"sensitive failure" not in response.body

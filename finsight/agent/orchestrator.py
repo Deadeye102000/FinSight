@@ -1,15 +1,19 @@
-"""Claude orchestration for FinSight."""
+"""LLM orchestration for FinSight."""
 
 import asyncio
 import json
+import os
 import re
 import subprocess
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
 from anthropic import Anthropic
+from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from openai import OpenAI
 from pydantic import BaseModel
 
 
@@ -31,20 +35,36 @@ class ResearchReport(BaseModel):
 
 
 class FinSightAgent:
-    def __init__(self, mcp_server_path: str):
+    def __init__(
+        self,
+        mcp_server_path: str,
+        llm_provider: str | None = None,
+        anthropic_model: str | None = None,
+        openai_model: str | None = None,
+    ):
+        load_dotenv()
         self.mcp_server_path = mcp_server_path
-        self.client = Anthropic()  # Assuming API key is set in env
+        self.llm_provider = (llm_provider or os.getenv("FINSIGHT_LLM_PROVIDER") or "anthropic").strip().lower()
+        self.anthropic_model = anthropic_model or os.getenv("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20241022"
+        self.openai_model = openai_model or os.getenv("OPENAI_MODEL") or "gpt-5"
+
+        if self.llm_provider not in {"anthropic", "openai"}:
+            raise ValueError("FINSIGHT_LLM_PROVIDER must be either 'anthropic' or 'openai'.")
+
+        self.anthropic_client = Anthropic() if self.llm_provider == "anthropic" else None
+        self.openai_client = OpenAI() if self.llm_provider == "openai" else None
+        self.client = self.anthropic_client or self.openai_client
         self.system_prompt = """You are FinSight, an AI financial research analyst. You have access to these tools:
 - get_stock_price: technical data, price action, RSI, MACD
 - get_fundamentals: valuation ratios, margins, analyst ratings  
 - get_news_sentiment: news sentiment from recent headlines
-- get_sec_filing_summary: latest 10-K/10-Q filing analysis
+- get_corporate_announcements: latest exchange announcements and filing-style company updates
 - compare_peers: peer group comparison and relative valuation
 
 When a user asks about a stock:
 1. Always call get_stock_price and get_fundamentals first
 2. Call get_news_sentiment if the user asks about recent events or news
-3. Call get_sec_filing_summary if the user asks about company strategy, risks, or annual report
+3. Call get_corporate_announcements if the user asks about company strategy, risks, filings, or recent corporate updates
 4. Call compare_peers if the user asks how the stock compares to competitors
 5. After gathering data, write a structured research report in markdown with:
    - Executive Summary (2-3 sentences)
@@ -130,9 +150,14 @@ Be specific — cite actual numbers from the tools, never make up data."""
         return list(set(tickers))  # unique
 
     async def _run_with_mcp(self, query: str) -> Dict[str, Any]:
+        if self.llm_provider == "openai":
+            return await self._run_with_mcp_openai(query)
+        return await self._run_with_mcp_anthropic(query)
+
+    async def _run_with_mcp_anthropic(self, query: str) -> Dict[str, Any]:
         # Start MCP server process
         server_params = StdioServerParameters(
-            command="python",
+            command=sys.executable,
             args=[self.mcp_server_path],
             env=None,
         )
@@ -164,8 +189,8 @@ Be specific — cite actual numbers from the tools, never make up data."""
                 final_analysis = ""
                 max_iterations = 5
                 for _ in range(max_iterations):
-                    response = self.client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
+                    response = self.anthropic_client.messages.create(
+                        model=self.anthropic_model,
                         max_tokens=4096,
                         system=self.system_prompt,
                         messages=messages,
@@ -241,6 +266,128 @@ Be specific — cite actual numbers from the tools, never make up data."""
             "filing_summary": tool_results.get("filing_summary"),
             "peer_comparison": tool_results.get("peer_comparison"),
             "final_analysis": final_analysis,
-            "tokens_used": tokens_used,
+            "tokens_used": total_tokens,
             "confidence": "High" if len(tools_called) >= 2 else "Medium",
         }
+
+    async def _run_with_mcp_openai(self, query: str) -> Dict[str, Any]:
+        server_params = StdioServerParameters(
+            command=sys.executable,
+            args=[self.mcp_server_path],
+            env=None,
+        )
+
+        tools_called: list[str] = []
+        tool_results: dict[str, Any] = {}
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                tools_response = await session.list_tools()
+                tools = tools_response.tools
+                openai_tools = [self._mcp_tool_to_openai_tool(tool) for tool in tools]
+
+                messages: list[Any] = [{"role": "user", "content": query}]
+                total_tokens = 0
+                final_analysis = ""
+                max_iterations = 5
+
+                for _ in range(max_iterations):
+                    response = self.openai_client.responses.create(
+                        model=self.openai_model,
+                        instructions=self.system_prompt,
+                        input=messages,
+                        tools=openai_tools,
+                    )
+                    total_tokens += self._openai_usage_tokens(response)
+
+                    function_calls = [
+                        item for item in getattr(response, "output", []) if getattr(item, "type", None) == "function_call"
+                    ]
+                    if not function_calls:
+                        final_analysis = self._openai_response_text(response)
+                        break
+
+                    messages.extend(getattr(response, "output", []))
+                    for tool_call in function_calls:
+                        tool_name = tool_call.name
+                        tool_args = json.loads(tool_call.arguments or "{}")
+
+                        tools_called.append(tool_name)
+                        result = await session.call_tool(tool_name, tool_args)
+                        result_text = result.content[0].text if result.content else ""
+                        parsed = self._parse_tool_result(result_text)
+                        self._store_tool_result(tool_results, tool_name, parsed)
+
+                        messages.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": tool_call.call_id,
+                                "output": result_text,
+                            }
+                        )
+
+        return {
+            "tools_called": tools_called,
+            "price_data": tool_results.get("price_data"),
+            "fundamentals": tool_results.get("fundamentals"),
+            "sentiment": tool_results.get("sentiment"),
+            "filing_summary": tool_results.get("filing_summary"),
+            "peer_comparison": tool_results.get("peer_comparison"),
+            "final_analysis": final_analysis,
+            "tokens_used": total_tokens,
+            "confidence": "High" if len(tools_called) >= 2 else "Medium",
+        }
+
+    def _mcp_tool_to_openai_tool(self, tool: Any) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description or "",
+            "parameters": tool.inputSchema or {"type": "object", "properties": {}},
+        }
+
+    def _parse_tool_result(self, result_text: str) -> Any:
+        if not result_text:
+            return None
+        try:
+            return json.loads(result_text)
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON", "raw": result_text}
+
+    def _store_tool_result(self, tool_results: dict[str, Any], tool_name: str, parsed: Any) -> None:
+        if tool_name == "get_stock_price":
+            tool_results["price_data"] = parsed
+        elif tool_name == "get_fundamentals":
+            tool_results["fundamentals"] = parsed
+        elif tool_name == "get_news_sentiment":
+            tool_results["sentiment"] = parsed
+        elif tool_name == "get_corporate_announcements":
+            tool_results["filing_summary"] = parsed
+        elif tool_name == "compare_peers":
+            tool_results["peer_comparison"] = parsed
+
+    def _openai_usage_tokens(self, response: Any) -> int:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return 0
+        total = getattr(usage, "total_tokens", None)
+        if total is not None:
+            return int(total)
+        return int(getattr(usage, "input_tokens", 0) or 0) + int(getattr(usage, "output_tokens", 0) or 0)
+
+    def _openai_response_text(self, response: Any) -> str:
+        output_text = getattr(response, "output_text", None)
+        if output_text:
+            return str(output_text)
+
+        chunks: list[str] = []
+        for item in getattr(response, "output", []):
+            if getattr(item, "type", None) != "message":
+                continue
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", None)
+                if text:
+                    chunks.append(str(text))
+        return "".join(chunks)

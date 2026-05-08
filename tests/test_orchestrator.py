@@ -1,6 +1,7 @@
 """Tests for FinSightAgent orchestrator."""
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from finsight.agent.orchestrator import FinSightAgent, ResearchReport
 
@@ -183,3 +184,74 @@ async def test_error_handling_bad_ticker():
         report = await agent.research("Analyse FAKESTOCKXYZ999")
         assert report.error is not None
         assert "Bad ticker" in report.error
+
+
+def test_openai_provider_initialises(monkeypatch):
+    """FinSightAgent can be configured to use OpenAI instead of Anthropic."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    agent = FinSightAgent("/path/to/server.py", llm_provider="openai", openai_model="gpt-4.1")
+
+    assert agent.llm_provider == "openai"
+    assert agent.openai_model == "gpt-4.1"
+    assert agent.client is agent.openai_client
+
+
+def test_invalid_llm_provider_rejected():
+    """Unsupported provider names fail fast."""
+    with pytest.raises(ValueError, match="FINSIGHT_LLM_PROVIDER"):
+        FinSightAgent("/path/to/server.py", llm_provider="gemini")
+
+
+def test_mcp_tool_to_openai_tool(monkeypatch):
+    """MCP tool schemas are converted into OpenAI function tools."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    agent = FinSightAgent("/path/to/server.py", llm_provider="openai")
+    tool = SimpleNamespace(
+        name="get_stock_price",
+        description="Fetch price",
+        inputSchema={"type": "object", "properties": {"ticker": {"type": "string"}}},
+    )
+
+    openai_tool = agent._mcp_tool_to_openai_tool(tool)
+
+    assert openai_tool == {
+        "type": "function",
+        "name": "get_stock_price",
+        "description": "Fetch price",
+        "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}},
+    }
+
+
+def test_openai_helpers_parse_usage_and_text(monkeypatch):
+    """OpenAI response helpers tolerate SDK response shapes."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    agent = FinSightAgent("/path/to/server.py", llm_provider="openai")
+    response = SimpleNamespace(
+        output_text="Report text",
+        usage=SimpleNamespace(input_tokens=10, output_tokens=15, total_tokens=None),
+        output=[],
+    )
+
+    assert agent._openai_response_text(response) == "Report text"
+    assert agent._openai_usage_tokens(response) == 25
+
+
+def test_store_tool_result_maps_known_tools(monkeypatch):
+    """Tool outputs are stored under ResearchReport field names."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    agent = FinSightAgent("/path/to/server.py", llm_provider="openai")
+    results = {}
+
+    agent._store_tool_result(results, "get_stock_price", {"price": 1})
+    agent._store_tool_result(results, "get_fundamentals", {"pe": 2})
+    agent._store_tool_result(results, "get_news_sentiment", {"sentiment": "Neutral"})
+    agent._store_tool_result(results, "get_corporate_announcements", {"summary": "ok"})
+    agent._store_tool_result(results, "compare_peers", {"winner": "AAPL"})
+
+    assert results == {
+        "price_data": {"price": 1},
+        "fundamentals": {"pe": 2},
+        "sentiment": {"sentiment": "Neutral"},
+        "filing_summary": {"summary": "ok"},
+        "peer_comparison": {"winner": "AAPL"},
+    }

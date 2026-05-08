@@ -1,190 +1,487 @@
-# FinSight — Interview Preparation
+# FinSight Interview Preparation
 
-## How to use this file
+FinSight is now a demoable project with MCP tools, a FastAPI backend, agent orchestration, and a Streamlit UI. Use this file in two ways:
 
-Read each answer out loud before interviews. If you cannot explain it without reading, you do not know it yet. The goal is to answer every question in 90 seconds or less, naturally.
+1. Practice answers out loud until each one fits in 60-90 seconds.
+2. Use the "learn deeper" prompts to understand the engineering tradeoffs, not just memorize lines.
 
-This file is intentionally grounded in the current codebase. If a feature is not implemented yet, the answer says that plainly instead of inventing a finished architecture.
-
----
-
-## Q1: What is MCP and why did you use it instead of regular function calling?
-
-**Current answer:**
-
-MCP is a protocol for exposing tools through a separate server process so an agent can discover and call them through a standard interface. Regular Anthropic function calling means passing tool schemas directly to the Anthropic API and handling `tool_use` blocks inside the same application process. I chose MCP for FinSight because the financial data tools are already isolated behind a dedicated server: `finsight/mcp_server/server.py` creates a `FastMCP("FinSight")` server at line 25 and registers tools with `@server.tool()` at lines 28, 35, 42, 49, and 60. The tradeoff is extra process/transport complexity: right now the server runs over stdio at `finsight/mcp_server/server.py:67-70`, while `finsight/agent/orchestrator.py:1-8` is still only an Anthropic client placeholder and does not yet connect to MCP.
-
-**Interview-safe phrasing today:**
-
-"MCP is a standard way to expose tools through a separate server. Regular function calling would put the tool schemas directly into the Anthropic request and handle `tool_use` inside the app process. I chose MCP because FinSight has several independent financial data tools and the server already registers them cleanly with `@server.tool()` in `mcp_server/server.py`. The tradeoff is more moving parts, especially stdio transport; I accepted that because it keeps the research tools separate from the agent layer, though the orchestrator connection is still a later step."
-
-**Update after Step 7:** The orchestrator now connects to MCP via stdio client in `finsight/agent/orchestrator.py:95-105`, initializes a session, lists tools, and executes them in a tool-calling loop with Claude at `orchestrator.py:115-180`. The tradeoff is accepted for clean separation, and the connection is fully implemented.
+Be honest in interviews. FinSight is a strong learning project, not a regulated investment product. Say what works, say what is intentionally simplified, and say how you would harden it.
 
 ---
 
-## Q2: Walk me through exactly what happens when a user types "Analyse TCS stock"
+## Step 10 Core Interview Q&A
 
-**Current answer: orchestrator implemented, UI/API integration pending.**
+### 1. What is MCP and how does it differ from function calling?
 
-What exists today:
+MCP, or Model Context Protocol, is a standard way to expose tools to an AI agent through a separate tool server. In normal function calling, the application usually passes function schemas directly into the model request and executes those functions inside the same app process. In FinSight, the tools live behind an MCP server, so the agent can discover available tools, pass their schemas to Claude or GPT, call them, and receive structured JSON results.
 
-1. Streamlit does not yet accept a user query. It only sets page config and displays scaffold text in `finsight/ui/app.py:6-8`.
-2. FastAPI does not yet expose a research endpoint. It only exposes `GET /health` in `finsight/api/main.py:9-12`.
-3. `FinSightAgent.research()` now exists in `finsight/agent/orchestrator.py:25-85` and connects to MCP, runs Claude with tools, and returns a `ResearchReport`.
-4. The system prompt is implemented in `orchestrator.py:15-35` and forces tool usage.
-5. The MCP server tools are registered in `finsight/mcp_server/server.py:28-64`.
+The tradeoff is simplicity versus separation. Direct function calling is simpler for a small app. MCP adds process and transport complexity, but it gives a cleaner boundary between the agent and the financial data tools.
 
-**What the flow becomes after Step 8:**
+### 2. Walk me through how a user query becomes a research report.
 
-1. User input should hit a Streamlit text input or form in `finsight/ui/app.py`.
-2. Streamlit should POST to a FastAPI research endpoint in `finsight/api/main.py`.
-3. That endpoint should call `FinSightAgent.research()` in `finsight/agent/orchestrator.py`.
-4. Claude receives the system prompt and calls tools based on the query.
-5. For "Analyse TCS stock", Claude typically calls `get_stock_price`, `get_fundamentals`, `get_news_sentiment`, `get_corporate_announcements`, and possibly `compare_peers`: price gives technicals, fundamentals gives valuation, sentiment gives news tone, announcements gives India-specific corporate actions, and peers adds relative context.
-6. The MCP server routes those calls through `finsight/mcp_server/server.py:28-64` to the implementations in `finsight/mcp_server/tools/`.
-7. `yfinance` is called in `price.py:127-146` and `fundamentals.py:149-153`; BSE/NSE APIs are called in `announcements.py:125-149` and `announcements.py:308-332`.
-8. Claude synthesizes a `ResearchReport` with structured markdown.
-9. FastAPI should return JSON and Streamlit should render sections or tabs.
+The user enters a ticker in Streamlit and clicks `Analyse`. Streamlit calls the FastAPI backend, usually through `/research` for Full mode and direct `/tools/*` endpoints for fast core data. FastAPI calls `FinSightAgent.research()`. The agent connects to the MCP server over stdio, lists the available tools, sends tool schemas to the configured LLM provider, executes the model's tool calls, collects price, fundamentals, sentiment, announcements, and peer data, then asks the model to synthesize a final markdown report.
 
-**The agent layer is now complete; UI/API wiring is the next step.**
+The response returns both the final report and the underlying tool outputs. Streamlit renders the report plus separate tabs for price/technicals, fundamentals, news sentiment, filing analysis, and peer comparison.
 
----
+### 3. How do you prevent hallucinated financial data?
 
-## Q3: How do you prevent hallucinated financial data?
+FinSight reduces hallucination by grounding the report in tool outputs. The model is not supposed to know the stock price from memory; it calls tools that return structured fields and `error` values. The UI also shows those tool outputs separately, so users can inspect the evidence behind the final analysis.
 
-**Current answer: partial implementation, agent guardrails pending.**
+The remaining risk is overinterpretation. A model can still sound too confident about incomplete data. The production-grade next step is a factuality eval suite that compares generated reports against frozen tool fixtures and fails reports that invent numbers or ignore provider errors.
 
-A) **Grounding:** The data grounding exists at the tool layer, and now the agent layer enforces it. The tools fetch real provider data as before. The system prompt in `orchestrator.py:15-35` explicitly tells Claude "Be specific — cite actual numbers from the tools, never make up data." The `ResearchReport` schema in `orchestrator.py:9-21` separates tool outputs into dedicated fields like `price_data`, `fundamentals`, etc.
+### 4. How did you handle the SEC rate limiting?
 
-B) **Error propagation:** Every tool returns an `error` field, and the orchestrator now surfaces errors in the `ResearchReport.error` field at `orchestrator.py:75-76` if tool calls fail.
+The current implementation does not yet include a full SEC EDGAR 10-K/10-Q ingestion pipeline. For Indian equities, FinSight uses BSE/NSE corporate announcements and handles exchange pressure with timeouts, conservative request pacing, and in-process caching.
 
-C) **Disclaimer:** The `ResearchReport` includes a forced `disclaimer` field set to "Not financial advice" in `orchestrator.py:77`, independent of Claude's output.
+If I add SEC EDGAR, I would follow SEC guidance: set a clear `User-Agent`, enforce client-side rate limiting, cache filings by accession number, avoid repeated downloads, and process long filings asynchronously. I would also separate raw filing retrieval from LLM summarization so one slow filing does not block the whole API.
 
-D) **Next eval step:** There is no `benchmarks/run_benchmarks.py` or `benchmarks/results.json` yet. The right next step is an eval harness that checks tool factuality and refusal behavior: for example, feed known tickers, invalid tickers, and missing-provider cases, then assert the report uses `error` fields instead of inventing P/E ratios, market caps, or announcement dates.
+### 5. How would you scale this to 10,000 concurrent users?
 
-**Interview-safe phrasing today:**
+The bottleneck is mostly provider I/O and long-running agent workflows, not simple FastAPI routing. I would add Redis for shared cache, provider-specific rate limits, queues for Full-mode research jobs, and precomputation for popular tickers. Quick mode should stay low latency by returning cached price and fundamentals quickly. Full mode can stream progress or return a job ID.
 
-"The grounding is strong at both layers: tools provide real data with error fields, and the agent now has a system prompt and schema that force Claude to only use tool outputs and always include a disclaimer. The orchestrator implementation in `orchestrator.py` makes this concrete."
+At scale, I would also add authentication, user-level quotas, structured tracing, p95 latency dashboards, provider error monitoring, and deployment separation between UI, API, workers, and cache.
 
----
+### 6. What's your context window strategy for long 10-K filings?
 
-## Q4: Why did you choose FinBERT over calling GPT-4 for sentiment?
+For long filings, I would not send the full 10-K to the model. I would parse the filing, split it into sections, extract relevant chunks such as business overview, risk factors, MD&A, liquidity, and legal proceedings, then summarize those chunks hierarchically. The agent should receive compact evidence snippets with citations or source section labels.
 
-**Current answer without benchmark numbers:**
+In the current code, filing-style analysis is metadata-first for BSE/NSE announcements. It does not yet parse full SEC 10-K documents. That is a roadmap item, and the context strategy would be chunking plus retrieval, not brute-force prompting.
 
-I chose FinBERT for three reasons. First, cost: the model runs locally through HuggingFace, so the classification step costs zero per call after download; the code loads `ProsusAI/finbert` at `finsight/mcp_server/tools/sentiment.py:19-24` and lazily caches the pipeline at `sentiment.py:58-65`. Second, domain fit: the model is built for financial sentiment, and the tests verify the concrete behavior I need: a profit/growth sentence classifies positive and a bankruptcy/losses sentence classifies negative in `tests/test_sentiment.py:63-73`. Third, integration simplicity: `get_news_sentiment` maps FinBERT labels into signed scores at `sentiment.py:145-168` and returns a stable aggregate payload at `sentiment.py:171-209`.
+### 7. Why did you choose FinBERT over GPT for sentiment?
 
-**Numbers still pending:**
+FinBERT is a financial-domain classifier, so it is a good fit for headline sentiment. It runs locally after download, which means no per-headline LLM cost, predictable labels, and easy aggregation into positive, negative, and neutral counts. GPT or Claude could explain sentiment more richly, but that is overkill for the current use case where sentiment is one numeric signal in a larger research report.
 
-There is no `benchmarks/results.json` yet, so do not quote accuracy, latency per headline, or GPT-4 cost comparisons as measured project results. Once benchmarks exist, update this answer with measured FinBERT accuracy and latency.
+The tradeoff is nuance. FinBERT may miss sarcasm, article context, or whether news is already priced in. For FinSight, I use FinBERT for cheap classification and Claude or GPT for higher-level synthesis.
 
-**Tradeoff:**
+### 8. How do you evaluate the quality of the agent's output?
 
-FinBERT only returns positive, negative, or neutral. It does not explain why a headline is negative the way a generative model could. For FinSight's current use case, classification is enough because the downstream report needs aggregate tone, counts, and representative headlines rather than full narrative reasoning for every headline.
+I would evaluate it with frozen tool fixtures and expected report properties. The report should quote the same numbers returned by tools, acknowledge missing data and `error` fields, include required sections, include the disclaimer, and avoid unsupported claims. I would measure factual consistency, error acknowledgement rate, section completion, token usage, latency, and human usefulness scores.
+
+The current test suite covers tools, API behavior, agent error handling, and MCP wrappers. The next step is an eval harness for generated report factuality.
 
 ---
 
-## Q5: How would you scale FinSight to 10,000 concurrent users?
+## 1. Project Pitch
 
-**Current state:**
+### Q1. Explain FinSight in one minute.
 
-Right now FinSight does not have API rate limiting. `finsight/api/main.py:6-12` only defines the FastAPI app and a health check. Tool-level caching exists in specific places: yfinance history is cached with `@lru_cache(maxsize=64)` in `price.py:127-128`, fundamentals data is cached in `fundamentals.py:149-169`, FinBERT is cached as a module-level pipeline in `sentiment.py:23` and `sentiment.py:58-65`, and announcements use a 30-minute module-level cache in `announcements.py:68` and `announcements.py:543-547`. Peer comparison itself is concurrent rather than cached; it calls the underlying tools across tickers with `asyncio.gather` in `peers.py:112-114`.
+**Answer framework:**
 
-**Path to scale:**
+"FinSight is an AI-powered stock research assistant for US and Indian equities. A user enters a ticker like AAPL, TCS.NS, or RELIANCE.NS, and the app combines price technicals, fundamentals, news sentiment, corporate announcements or filings, and peer comparison into a structured research report. The architecture has a Streamlit UI, FastAPI backend, a provider-switchable LLM agent, and MCP tools for the actual financial data retrieval. I built it to learn how real multi-tool AI systems work: grounding, tool contracts, caching, failure handling, and UX for explaining financial data. It is not financial advice; it is a research assistant."
 
-1. At 100 users, the first thing that breaks is provider I/O: yfinance and BSE/NewsAPI calls are external network dependencies with rate limits and variable latency.
-2. At 1,000 users, I would add Redis caching keyed by ticker, period, filing or announcement type, and freshness window so repeated popular tickers like TCS, Reliance, Apple, and Microsoft do not hit providers repeatedly.
-3. At 10,000 users, I would queue agent research jobs and stream progress back to the UI, because an LLM research request is a multi-tool workflow rather than a simple low-latency CRUD request.
-4. The bottleneck is mostly I/O and third-party API limits, not CPU; FinBERT has compute cost, but it is cached in-process and can be batched or queued.
-5. I would not try to horizontally scale by letting every API instance independently hammer yfinance, BSE, and NewsAPI; I would centralize cache and queueing first.
+**What this answer shows:** product sense, architecture awareness, and safety.
+
+**Follow-up trap:** If asked "Is it production ready?", do not oversell. Say it has strong project-level engineering, but production finance would need stricter data licensing, observability, auth, audit logs, evals, and compliance review.
 
 ---
 
-## Q6: How did you handle the BSE API rate limiting?
+### Q2. Why is this project more interesting than a normal chatbot wrapper?
 
-**Answer:**
+**Answer framework:**
 
-BSE's public API does not publish a simple developer rate limit, so I was conservative. In `finsight/mcp_server/tools/announcements.py:29-31`, I set `HTTP_TIMEOUT_SECONDS = 5`, `BSE_REQUEST_DELAY_SECONDS = 1`, and `CACHE_TTL_SECONDS = 30 * 60`. The actual delay is implemented in `_sleep_before_bse_call()` at `announcements.py:115-122` using `time.monotonic()` and `time.sleep()`, and every BSE call goes through `_bse_get()` at `announcements.py:125-136`. I also added a module-level cache at `announcements.py:68` and read from it in `get_corporate_announcements()` at `announcements.py:543-547`, so repeated queries for the same `(ticker, announcement_type)` do not hit BSE for 30 minutes.
+"A normal chatbot wrapper relies mostly on the model's latent knowledge. FinSight is tool-grounded. The model does not invent a stock price; it calls specific tools for price, fundamentals, sentiment, filings, and peers. The UI also exposes the tool outputs directly in tabs, so users can inspect the evidence behind the final report. The interesting engineering problem is orchestration: deciding what tools to call, normalizing different provider responses, surfacing errors honestly, and presenting uncertain financial data in a usable way."
 
-During testing, BSE returned a clean `200` JSON response for TCS announcements with rows under `Table`, including fields like `NEWSSUB`, `DT_TM`, `CATEGORYNAME`, `ATTACHMENTNAME`, and `SLONGNAME`. I also saw that NSE's fallback endpoint can return `200` with an empty `data` list, so the code treats "reachable" and "useful announcements found" as separate outcomes.
+**Learn deeper:**
 
-The behavior is covered by `tests/test_announcements.py`: BSE reachability is checked at lines 12-24, mock fallback on HTTP timeout is tested at lines 63-71, and cache speed is tested at lines 74-80.
-
----
-
-## Q7: What is your context window strategy for long announcements?
-
-**Current answer:**
-
-BSE announcements can link to long PDFs, but the current implementation does not download or send PDF bodies to Claude. Instead, it keeps the Claude context compact by sending only structured announcement rows: date, category, and headline. That formatting happens in `_announcements_text()` at `finsight/mcp_server/tools/announcements.py:375-383`, and raw attachment URLs are preserved separately at `announcements.py:245-252` and `announcements.py:269-276`.
-
-This means the current prompt size is bounded by the number of announcements `n`, not by PDF length. The tradeoff is that FinSight can summarize the announcement feed but cannot yet extract detailed financial figures from attached PDFs unless those figures appear in the headline. A better production approach would be to fetch the PDF attachment, extract text, chunk with overlap, and send only the financial highlights or results section to Claude.
-
-**Important correction to the original template:**
-
-There is no "first 2000 words" announcement strategy in the current code. That was true of the removed SEC MD&A implementation, not the current BSE/NSE announcements tool.
+- What is the difference between model knowledge and tool-grounded knowledge?
+- Why is transparency important in finance UX?
+- What can still hallucinate even when tools are used?
 
 ---
 
-## Q8: What would you add if you had 2 more weeks?
+## 2. Architecture Deep Dive
 
-**Answer:**
+### Q3. Walk me through what happens when a user analyses AAPL in Full mode.
 
-Three things. First, I would finish the agent/API/UI flow because right now the tools are strong, but a user cannot type "Analyse TCS stock" into Streamlit and get a complete research report; `ui/app.py:6-8`, `api/main.py:9-12`, and `agent/orchestrator.py:1-8` are still scaffolds. Second, I would build a shared Redis cache and provider adapter layer because the current caching is per-process and scattered across `@lru_cache` in price/fundamentals and a module dict in announcements, which does not work across multiple API instances. Third, I would add a proper eval pipeline: right now the tests verify tool behavior, like sentiment label sanity in `tests/test_sentiment.py:63-73` and announcements fallback/caching in `tests/test_announcements.py:63-80`, but a real eval would score complete generated reports for factuality, missing-data honesty, latency, and cost.
+**Answer framework:**
 
----
+1. The user enters `AAPL` in the Streamlit sidebar and clicks `Analyse`.
+2. `finsight/ui/app.py` shows a spinner and calls cached analysis logic with a 5-minute TTL.
+3. The UI calls FastAPI endpoints on `localhost:8000`.
+4. Quick tool calls fetch price and fundamentals directly so the UI can still show useful data even if the agent path is slow or unavailable.
+5. In Full mode, the UI calls `/research`, which invokes `FinSightAgent.research()`.
+6. The agent connects to the MCP server over stdio, lists available tools, sends tool schemas to Claude or GPT, executes tool calls, and collects structured results.
+7. The backend returns a `ResearchReport` containing `price_data`, `fundamentals`, `sentiment`, `filing_summary`, `peer_comparison`, `final_analysis`, confidence, latency, and token usage.
+8. Streamlit renders five tabs: report, price/technicals, fundamentals, news sentiment, and filing analysis.
+9. Full mode also exposes a peer comparison section below the tabs.
 
-## Quick-fire answers (30 seconds each)
-
-- **"What does stdio transport mean in MCP?"** → The MCP server communicates over standard input and output instead of HTTP. In FinSight, `server.run(transport="stdio")` is at `finsight/mcp_server/server.py:67-70`, which is simple for local agent-server wiring but not ideal for browser clients or horizontally scaled services.
-
-- **"What is Wilder's RSI and why 14 periods?"** → RSI measures average gains versus average losses to estimate overbought or oversold momentum. FinSight computes Wilder-style smoothing manually in `price.py:66-90` and uses 14 periods in the result at `price.py:248` because 14 is the common default traders expect.
-
-- **"What is a golden cross and why does it matter?"** → A golden cross is when a shorter moving average is above a longer moving average, often read as bullish trend confirmation. FinSight computes 50-day and 200-day moving averages at `price.py:225-226` and sets `golden_cross` with `ma_50 > ma_200` at `price.py:250-252`.
-
-- **"Why asyncio.gather and not threading for peer comparison?"** → Peer comparison fetches several tickers at once, and each fetch is mostly provider I/O through the existing price and fundamentals tools. In `finsight/mcp_server/tools/peers.py:107-114`, I wrap the synchronous per-ticker fetch in `asyncio.to_thread()` and run those tasks with `asyncio.gather`, so the implementation reuses existing sync tools while avoiding sequential network waits.
-
-- **"What is the difference between pe_ratio and peg_ratio?"** → P/E compares price to earnings, while PEG adjusts P/E by expected growth. FinSight returns both from Yahoo fields: `trailingPE` maps to `pe_ratio` and `pegRatio` maps to `peg_ratio` in `fundamentals.py:248-260`.
-
-- **"Why FastAPI over Flask?"** → FastAPI is already the project scaffold at `api/main.py:3-12`; it gives typed request/response models and async-friendly endpoints, which fit a tool-heavy agent backend better than a minimal Flask app.
-
-- **"Why Streamlit over a React frontend?"** → Streamlit is currently the fastest way to build a working research UI in Python; the scaffold is at `ui/app.py:3-8`. For an interview/demo project, speed of iteration matters more than custom frontend architecture.
-
-- **"What does FinBERT stand for?"** → It is a financial-domain BERT model. In this project, the exact model is `ProsusAI/finbert`, configured at `sentiment.py:19-20` and loaded through HuggingFace at `sentiment.py:58-65`.
-
-- **"What is the NewsAPI free tier limit?"** → Do not quote a limit from memory in interviews. The code only assumes a `NEWS_API_KEY` may or may not exist: missing keys return mock data with an explanatory error at `sentiment.py:222-230`.
-
-- **"How does yfinance get data — does it scrape?"** → FinSight treats yfinance as an unofficial Yahoo Finance client. The code calls `yf.Ticker(...).history(...)` for prices at `price.py:127-133` and `yf.Ticker(ticker).info` for fundamentals at `fundamentals.py:149-153`, so provider reliability and schema changes are real risks.
+**Follow-up trap:** If asked whether every data field always exists, say no. Provider APIs can fail or return incomplete fields, so the UI handles missing values and tool `error` fields.
 
 ---
 
-## Red flags to avoid
+### Q4. Why did you choose MCP instead of direct Python function calls?
 
-These answers will end your interview:
+**Answer framework:**
 
-- "I used it because it's popular" — always say why it fits YOUR use case.
-- "I'm not sure how that part works" — if it is in the code, trace it before the interview.
-- Giving numbers you can't back up — benchmark numbers must come from `benchmarks/results.json`, which does not exist yet.
-- "The agent is intelligent" — say exactly what Claude does: reads tool outputs, follows the system prompt, and generates a structured report. Also say that this full orchestrator is not implemented yet.
-- Overselling: "production-grade" means tests, error handling, observability, security posture, and deployment readiness. FinSight currently has tested tools and scaffolds, not a hedge-fund-ready production system.
+"MCP gives the tools a standard interface that an agent can discover and call. Direct Python calls would be simpler inside one process, but MCP creates a clearer boundary between agent reasoning and tool execution. In FinSight, the MCP server registers finance tools such as stock price, fundamentals, news sentiment, corporate announcements, and peer comparison. The orchestrator can list tools and call them through a protocol instead of importing every function directly. The tradeoff is more moving parts: stdio process management, schema conversion, and error handling."
 
----
+**Strong extra point:**
 
-## One-line project pitch (memorise this)
-
-"FinSight is an AI research agent project for analysing Indian and US stocks together — fundamentals, technicals, news sentiment, Indian corporate announcements, and peer comparison — using Anthropic's MCP protocol with a local FinBERT model for zero-cost sentiment. I built it to understand how to design multi-tool LLM agents for real financial data, and the current codebase has the tools working while the full agent/UI orchestration is still being built."
-
-The last sentence matters: it shows intellectual honesty and learning orientation, which senior interviewers respect more than overselling.
+"For a local interview project, stdio MCP is fine. In a production web system, I would likely run tool services behind HTTP or a queue, then use MCP where it adds integration value."
 
 ---
 
-## Update Instructions For Future Steps
+### Q5. What are the major components and their responsibilities?
 
-After completing each build step, come back to this file and update the relevant answers with real code references and line numbers.
+**Answer framework:**
 
-Known pending updates:
+- `finsight/ui/app.py`: Streamlit dashboard, user inputs, tabs, caching, peer comparison display.
+- `ui/app.py`: top-level Streamlit entrypoint wrapper.
+- `finsight/api/main.py`: FastAPI app, request validation, rate limiting, CORS, research and tool endpoints.
+- `finsight/agent/orchestrator.py`: provider-switchable agent loop, MCP connection, LLM tool calling, final report schema.
+- `finsight/mcp_server/server.py`: MCP tool registration.
+- `finsight/mcp_server/tools/price.py`: yfinance price history, RSI, MACD, moving averages, OHLCV.
+- `finsight/mcp_server/tools/fundamentals.py`: valuation and financial ratios from Yahoo Finance.
+- `finsight/mcp_server/tools/sentiment.py`: NewsAPI or mock headlines plus local FinBERT classification.
+- `finsight/mcp_server/tools/announcements.py`: BSE/NSE corporate announcements and summary.
+- `finsight/mcp_server/tools/peers.py`: concurrent peer comparison using price and fundamentals.
 
-- After Step 7, update Q1 and Q3 with the real MCP client connection and system prompt in `finsight/agent/orchestrator.py`.
-- After Step 8, update Q2 with the real Streamlit -> FastAPI -> agent -> MCP -> report flow.
-- After benchmarks are added, update Q4 with measured FinBERT accuracy, latency, and cost comparisons from `benchmarks/results.json`.
-- After report schema work, update Q3 with the real `ResearchReport` disclaimer field and line number.
+**Learn deeper:** Practice drawing this as a box diagram from memory.
+
+---
+
+### Q6. Where does caching happen and why?
+
+**Answer framework:**
+
+"Caching happens at multiple layers. The Streamlit UI caches analysis results for 5 minutes using `st.cache_data`, which improves demo responsiveness and avoids repeated API calls. Price and fundamentals use in-process `lru_cache` for provider data. Announcements use a time-based module cache because BSE/NSE data does not need to refresh every second. FinBERT is loaded lazily and cached as a model pipeline, because loading the model repeatedly would be expensive. The limitation is that most of this cache is process-local; in production I would use Redis or another shared cache."
+
+**Follow-up trap:** If asked whether `lru_cache` is enough for horizontal scaling, answer no. Each process has its own cache.
+
+---
+
+## 3. Agent And LLM Questions
+
+### Q7. How do you prevent hallucinated financial data?
+
+**Answer framework:**
+
+"I reduce hallucination by grounding the agent in tools and by preserving raw tool outputs in the response. The system prompt tells the model to use actual numbers from tools and not invent data. Each tool returns structured fields and an `error` field. The final report is only one part of the response; the UI also shows price data, fundamentals, sentiment, filings, and peer comparison directly. That means the user can inspect the underlying evidence. The remaining risk is that the model may overinterpret incomplete data, so a proper eval suite should check factual consistency between tool outputs and the generated report."
+
+**Learn deeper:**
+
+- Hallucination is not only "fake facts"; it can be overconfident interpretation.
+- Grounding reduces risk but does not eliminate it.
+- UI transparency is part of AI safety.
+
+---
+
+### Q8. What exactly does Claude do in this system?
+
+**Answer framework:**
+
+"Claude is not the data provider. It acts as the research synthesizer. It receives the user query, decides which tools to call through MCP, reads the returned JSON, and writes a structured markdown report. The actual prices, ratios, headlines, and announcements come from tools. Claude's value is in combining those signals into a readable conclusion with risks, technical picture, and fundamentals."
+
+**Follow-up trap:** Avoid saying "Claude predicts whether the stock will go up." Say it synthesizes research signals.
+
+---
+
+### Q9. How would you evaluate the quality of the generated reports?
+
+**Answer framework:**
+
+"I would build an eval set with known tickers and frozen tool fixtures. Then I would score reports on factual consistency, missing-data honesty, structure, risk coverage, disclaimer inclusion, and latency. For example, if the fixture says P/E is 28.4, the report should not say 18. I would also include invalid tickers and provider-error cases to check that the model explains uncertainty instead of filling gaps. Finally, I would track token usage and cost per report."
+
+**Possible metrics:**
+
+- Factual match rate for numeric fields.
+- Tool error acknowledgement rate.
+- Required-section completion rate.
+- Average latency and p95 latency.
+- Tokens per research request.
+- Human rating for usefulness and clarity.
+
+---
+
+### Q10. What would you do if the model calls the wrong tool?
+
+**Answer framework:**
+
+"I would solve it at multiple levels. First, improve tool descriptions and system instructions. Second, add orchestration rules outside the model for required tools: for example, always fetch price and fundamentals for stock analysis. Third, add validation after tool calls, so if required fields are missing, the agent can retry or degrade gracefully. For a production system, I would prefer a hybrid approach: deterministic prefetch for core data plus model-driven optional tools."
+
+**Strong extra point:** FinSight already leans this way because the Streamlit UI fetches price and fundamentals directly before relying on the full agent response.
+
+---
+
+## 4. Financial Data And Modeling
+
+### Q11. Explain RSI like you would to a non-technical interviewer.
+
+**Answer framework:**
+
+"RSI is a momentum indicator. It compares recent average gains and losses to estimate whether a stock may be overbought or oversold. A value above 70 is often considered overbought; below 30 is often considered oversold. FinSight computes a 14-period RSI and shows it as a gauge. It is not a buy or sell signal by itself; it is one piece of context."
+
+**Learn deeper:** RSI can stay high during strong uptrends and low during strong downtrends, so treating it as a standalone signal is naive.
+
+---
+
+### Q12. Explain MACD and golden cross.
+
+**Answer framework:**
+
+"MACD compares short-term and longer-term exponential moving averages to understand momentum. If the MACD line is above the signal line, FinSight marks it bullish; below, bearish; close together, neutral. A golden cross is simpler: it checks whether the 50-day moving average is above the 200-day moving average. Both are trend indicators, not guarantees."
+
+---
+
+### Q13. Why show fundamentals and technicals together?
+
+**Answer framework:**
+
+"They answer different questions. Fundamentals ask whether the business looks attractive based on valuation, profitability, margins, and debt. Technicals ask how the market has recently been pricing the stock. An interviewer or investor gets a more balanced view when both are visible. For example, a company can be fundamentally strong but technically overbought, or cheap by P/E but deteriorating in momentum."
+
+---
+
+### Q14. What are the limitations of P/E ratio?
+
+**Answer framework:**
+
+"P/E is useful but incomplete. It can be distorted by one-time earnings, cyclicality, accounting differences, negative earnings, or growth expectations. A high P/E may be justified for a high-growth company, while a low P/E can be a value trap. That is why FinSight also shows P/B, ROE, debt/equity, margins, analyst rating, target price, and peer comparison."
+
+**Learn deeper:** Practice explaining why banks, software companies, and manufacturers should not always be valued with the same metric.
+
+---
+
+### Q15. Why did you use FinBERT for sentiment instead of an LLM?
+
+**Answer framework:**
+
+"FinBERT is a financial-domain classifier. It is cheaper for repeated headline classification because it runs locally after download, and it returns consistent positive, negative, or neutral labels with confidence scores. An LLM could explain sentiment better, but it would cost more and may be less consistent for simple classification. In FinSight, sentiment is an input signal, not the final reasoning layer, so a specialized classifier fits well."
+
+**Tradeoff:** FinBERT classifies headlines only. It may miss nuance in full articles, sarcasm, market expectations, or whether news is already priced in.
+
+---
+
+### Q16. How do you handle Indian stocks differently from US stocks?
+
+**Answer framework:**
+
+"The price and fundamentals layer can handle tickers like `TCS.NS` or `RELIANCE.NS` through Yahoo Finance. For Indian corporate events, FinSight uses BSE/NSE announcement data rather than assuming SEC filings exist. That matters because Indian companies disclose through exchanges, and the naming conventions and identifiers are different. The UI supports both US-style and NSE-style tickers."
+
+**Follow-up trap:** Do not say every Indian ticker will work perfectly. Identifier mapping and exchange APIs can be incomplete.
+
+---
+
+## 5. Backend And Reliability
+
+### Q17. What happens when a provider API fails?
+
+**Answer framework:**
+
+"The tools return stable payloads with default values and an `error` field instead of crashing the entire app. The API wraps errors into JSON responses, and the UI displays warnings when a section has an error. Sentiment can fall back to mock headlines when `NEWS_API_KEY` is missing. Announcements can return mock or empty structured results when BSE/NSE are unavailable. The goal is graceful degradation: users should still see what data is available."
+
+---
+
+### Q18. How would you scale FinSight to 10,000 concurrent users?
+
+**Answer framework:**
+
+"The first bottleneck would be third-party provider I/O, not Python itself. I would add a shared Redis cache for ticker data, enforce per-provider rate limits, and queue full research jobs because agent workflows can be slow. I would separate quick data endpoints from longer agent synthesis. For popular tickers, I would precompute or refresh data on a schedule. I would also add observability: request IDs, tracing across UI/API/tool calls, latency histograms, and provider error dashboards."
+
+**Concrete scale plan:**
+
+- 100 users: cache aggressively and set timeouts.
+- 1,000 users: shared cache, worker queues, backpressure.
+- 10,000 users: precomputation, horizontal API instances, distributed tracing, provider contracts.
+
+---
+
+### Q19. What security concerns exist in this project?
+
+**Answer framework:**
+
+"The main concerns are API abuse, secrets management, dependency risk, prompt injection through external text, and financial misuse. The API has basic validation and rate limiting, but production would need authentication, user-level quotas, HTTPS, secret rotation, audit logs, and stricter CORS. External news or filing text can contain prompt-injection style content, so a production agent should treat provider text as data, not instructions."
+
+**Learn deeper:** Prompt injection is not only a chatbot problem; any retrieved external content can try to manipulate the model.
+
+---
+
+### Q20. How would you make the API more robust?
+
+**Answer framework:**
+
+"I would add typed response models for every tool endpoint, centralize provider adapters, use retries with jitter for transient errors, move caches to Redis, add structured logging, and define explicit error codes. I would also split long-running research into async jobs so the API can return a job ID and stream progress. Finally, I would add contract tests around provider payloads because yfinance and public exchange APIs can change fields."
+
+---
+
+## 6. Frontend And UX
+
+### Q21. Why Streamlit instead of React?
+
+**Answer framework:**
+
+"For this project, speed and demoability mattered. Streamlit lets me build a useful research interface in Python without a separate frontend stack. It is good for internal tools, prototypes, and interview demos. A React app would give more control over interaction design, auth, routing, and production frontend architecture, but it would slow down iteration. If FinSight became a product, I would consider React or Next.js later."
+
+---
+
+### Q22. What UX decisions did you make in the Streamlit app?
+
+**Answer framework:**
+
+"I separated the output into five tabs because different users care about different evidence: research report, price/technicals, fundamentals, news sentiment, and filings. The sidebar keeps the main workflow simple: ticker, presets, mode, analyse. Quick mode is for fast price and fundamentals; Full mode adds the complete research workflow and peers. I also added badges, metrics, gauges, progress bars, and tables so the UI is scannable instead of being one long generated paragraph."
+
+**Follow-up trap:** If asked about mobile, say Streamlit has limits, but the layout uses columns carefully and avoids overly dense custom CSS.
+
+---
+
+### Q23. Why show tool outputs separately if the report already summarizes them?
+
+**Answer framework:**
+
+"Because users should be able to verify the report. In finance, a polished paragraph is not enough. Showing the raw price metrics, valuation ratios, headlines, filings, and peer table makes the system more transparent and useful. It also makes errors easier to spot. If the final analysis says one thing but the metrics suggest another, the user can challenge it."
+
+---
+
+## 7. Testing And Quality
+
+### Q24. What tests does the project have?
+
+**Answer framework:**
+
+"The tests cover the main backend and tool behavior: API health, research endpoint validation, request IDs, CORS, rate limiting, invalid tickers, price tool behavior, fundamentals, sentiment, announcements fallback and caching, peer comparison, and orchestrator behavior. Streamlit UI is not unit tested directly, but I verified that it starts and used a render smoke check for the five-tab path."
+
+**Strong extra point:** "For a production UI, I would add Playwright smoke tests."
+
+---
+
+### Q25. What bug or weakness are you most aware of?
+
+**Answer framework:**
+
+"The biggest weakness is that external providers are unofficial or variable. yfinance, BSE/NSE endpoints, and NewsAPI can fail, rate limit, or change schemas. Another weakness is eval coverage: tool tests exist, but generated report factuality needs a dedicated benchmark. Finally, process-local caching is fine for a demo but not enough for a horizontally scaled service."
+
+**Why this is a good answer:** It shows maturity without undermining the project.
+
+---
+
+### Q26. How would you debug a bad report?
+
+**Answer framework:**
+
+1. Check the UI tabs to see whether the underlying tool outputs are correct.
+2. Call the corresponding FastAPI tool endpoint directly.
+3. Inspect the MCP tool implementation if the endpoint returns bad data.
+4. Check whether the agent prompt or tool descriptions caused misinterpretation.
+5. Reproduce with a fixture and add a regression test.
+
+**Learn deeper:** Always isolate whether the bug is data retrieval, normalization, orchestration, generation, or rendering.
+
+---
+
+## 8. Design Tradeoffs
+
+### Q27. Why does Quick mode exist?
+
+**Answer framework:**
+
+"Quick mode gives users fast price and fundamentals without waiting for the entire multi-tool agent workflow. It is useful for demos and for users who only want the core snapshot. Full mode is heavier because it adds sentiment, filings, and peers. This is a UX and systems tradeoff: not every request needs maximum depth."
+
+---
+
+### Q28. Why not call all tools every time?
+
+**Answer framework:**
+
+"Calling every tool every time increases latency, cost, provider load, and failure surface. For a simple price check, news and filings may be unnecessary. FinSight currently has Full mode for richer analysis, but a more refined production system would choose tools based on intent, freshness, and cached availability."
+
+---
+
+### Q29. What would you improve if you had two more weeks?
+
+**Answer framework:**
+
+1. Add a report eval suite using frozen tool fixtures and factuality checks.
+2. Move caching to Redis and add provider-level rate limiting.
+3. Add streaming progress updates in the UI for long Full-mode research.
+4. Add auth, user quotas, and better observability.
+5. Improve filing analysis by parsing attached PDFs instead of only announcement metadata.
+
+---
+
+### Q30. What did you personally learn from building FinSight?
+
+**Answer framework:**
+
+"I learned that AI apps are mostly systems engineering. The LLM is important, but the hard parts are data contracts, provider reliability, caching, validation, graceful failure, and UX transparency. I also learned that financial AI needs humility: numbers can be stale, providers can fail, and a confident report can still be wrong unless it is grounded and inspectable."
+
+---
+
+## 9. Rapid-Fire Drill
+
+Use these for quick practice. Answer each in under 30 seconds.
+
+- **What is MCP?** A protocol that lets agents discover and call tools through a standard interface, separate from the model itself.
+- **What is stdio transport?** The MCP client and server communicate through standard input and output streams rather than HTTP.
+- **What does FastAPI do here?** It exposes health, research, and direct tool endpoints for the UI.
+- **What does Streamlit do here?** It provides the interactive dashboard for ticker input, report rendering, metrics, and peer comparison.
+- **What does FinBERT do?** It classifies financial headlines as positive, negative, or neutral.
+- **What is RSI?** A momentum indicator comparing recent gains and losses, commonly interpreted with 70/30 thresholds.
+- **What is MACD?** A momentum indicator comparing short and longer exponential moving averages.
+- **What is P/E?** Price divided by earnings per share; a rough valuation measure.
+- **What is ROE?** Return on equity; a profitability/quality metric.
+- **What is debt/equity?** A leverage metric comparing debt to shareholder equity.
+- **Why cache data?** To reduce latency, cost, and provider pressure.
+- **Why show errors in the UI?** Because missing data should be transparent instead of silently hidden.
+- **Why include a disclaimer?** The app supports research, not personalized investment advice.
+- **What is graceful degradation?** Returning partial useful results when one tool or provider fails.
+- **What is the biggest production risk?** Provider reliability, data licensing, and factuality of generated reports.
+
+---
+
+## 10. Questions To Ask The Interviewer
+
+These make you sound thoughtful and help turn the interview into a real engineering conversation.
+
+1. "For AI systems in your team, how do you separate deterministic business logic from model-driven reasoning?"
+2. "Do you use evals or human review to measure LLM output quality?"
+3. "How do you handle observability for multi-step AI workflows?"
+4. "Where do you draw the line between prototype and production readiness for AI features?"
+5. "What reliability expectations do you set when a product depends on third-party data providers?"
+6. "How do your teams think about prompt injection from retrieved external content?"
+7. "Would you prefer a deterministic workflow engine or a more autonomous agent for this kind of use case?"
+
+---
+
+## 11. Practice Scenarios
+
+### Scenario A: The interviewer challenges data accuracy.
+
+**Say:**
+
+"That is exactly the right concern. FinSight reduces risk by grounding reports in tool outputs and showing those outputs separately. But I would not claim perfect accuracy. The next step would be frozen fixtures and factuality evals that compare generated text against source JSON."
+
+### Scenario B: The interviewer says MCP is overengineering.
+
+**Say:**
+
+"For a tiny app, direct function calls are simpler. I used MCP because the learning goal was multi-tool agent architecture and clean separation between tool server and agent. I can explain the tradeoff: MCP adds process and transport complexity, but it creates a standardized tool boundary."
+
+### Scenario C: The interviewer asks why not just use ChatGPT browsing.
+
+**Say:**
+
+"Browsing is general purpose. FinSight has structured data contracts and domain-specific tools. That lets the UI show exact fields like RSI, P/E, ROE, sentiment score, and peer rankings. Structured outputs are easier to test and safer to reuse than free-form browsing results."
+
+### Scenario D: The interviewer asks if this gives investment advice.
+
+**Say:**
+
+"No. It is a research assistant. It summarizes public data and signals, includes a disclaimer, and should not be used as personalized financial advice. A regulated product would need suitability checks, compliance review, audit trails, and licensed data."
+
+---
+
+## 12. Red Flags To Avoid
+
+- Do not say "the AI knows the stock price." The tools retrieve the stock price.
+- Do not quote benchmark numbers unless you have actually measured them.
+- Do not claim the app is production-ready for regulated finance.
+- Do not hide provider failures; explain graceful degradation.
+- Do not call technical indicators predictions.
+- Do not say Streamlit is always better than React; explain why it fits this project.
+- Do not say MCP is always necessary; explain the tradeoff.
+- Do not describe the agent as magic; describe the loop: prompt, tool schemas, tool calls, JSON results, synthesis.
+
+---
+
+## 13. Final Memorized Close
+
+"The main thing I learned from FinSight is that useful AI products are not just prompts. They are systems: data contracts, tools, caching, error handling, UI transparency, and evals. The LLM is the synthesis layer, but the engineering around it is what makes the output trustworthy."
