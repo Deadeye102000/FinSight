@@ -18,3 +18,4 @@ requests>=2.32.0
 pandas>=2.0.0
 numpy>=1.26.0
 pdfplumber>=0.11.0
+sentence-transformers>=3.0.0

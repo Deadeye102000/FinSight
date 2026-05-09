@@ -614,3 +614,54 @@ directly improves retrieval precision."
 - Detect and preserve tables separately — pdfplumber has
   extract_tables() which keeps table structure intact.
   Text-chunked tables lose their row/column relationships.
+
+---
+## RAG — Step 2: Embeddings
+
+### What I built
+- finsight/rag/embedder.py
+- Embedder class with lazy loading and module-level singleton
+- all-MiniLM-L6-v2: 384 dimensions, CPU-only, ~80MB
+
+### The concept: what an embedding actually is
+An embedding converts text into a point in high-dimensional space
+such that semantically similar texts land near each other.
+"Revenue increased" and "Sales grew" end up close together.
+"It rained in Mumbai" ends up far from both.
+Distance is measured by cosine similarity:
+  cos(θ) = dot(A,B) / (|A| * |B|)
+Range: -1 (opposite) to +1 (identical direction).
+
+### The decision I can defend: why not OpenAI embeddings
+
+OpenAI text-embedding-3-small costs $0.02 per million tokens.
+For a 300-page annual report (~150,000 tokens), that is $0.003
+per ingestion — negligible individually.
+
+But the real reason to use a local model:
+1. Latency: local inference has no network round trip
+2. Privacy: annual reports can be price-sensitive documents
+3. Portfolio signal: shows I can run ML inference locally,
+   not just call APIs
+
+The tradeoff: all-MiniLM-L6-v2 was not trained on financial text.
+Terms like "EBITDA", "PAT", "QoQ" are rare in its training data.
+This is why I add BM25 hybrid search in Step 4 — keywords
+that embed poorly get caught by exact-term matching.
+
+### The critical mistake to avoid: asymmetric models
+Query and documents MUST use the same embedding model.
+If you embed documents with model A and queries with model B,
+cosine similarity is meaningless — the vector spaces are different.
+In embedder.py, embed_query() and embed_texts() call the same
+self._model instance. This is not an accident.
+
+### Question I can answer cold
+"What is cosine similarity and why use it over Euclidean distance?"
+"Cosine similarity measures the angle between two vectors, ignoring
+magnitude. For text embeddings, two sentences with the same meaning
+should point in the same direction regardless of sentence length.
+A short sentence and a long sentence expressing the same idea will
+have different magnitudes but nearly the same angle. Euclidean
+distance conflates direction and magnitude, so it penalises length
+differences incorrectly."
