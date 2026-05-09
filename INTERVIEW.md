@@ -564,3 +564,53 @@ Then restart the backend. In production, rate limits should usually be user/API-
 ## 14. Final Memorized Close
 
 "The main thing I learned from FinSight is that useful AI products are not just prompts. They are systems: data contracts, tools, caching, error handling, UI transparency, and evals. The LLM is the synthesis layer, but the engineering around it is what makes the output trustworthy."
+
+---
+## RAG — Step 1: PDF Extraction and Chunking
+
+### What I built
+- finsight/rag/chunker.py
+- extract_text_from_pdf(): pdfplumber page-by-page extraction
+- chunk_document(): sentence-aware sliding window with overlap
+
+### The decision I can defend: chunk_size=512, overlap=64
+
+Why 512 tokens:
+- Too small (128): a single financial paragraph gets split across
+  multiple chunks, losing context. "Revenue grew 18% YoY driven by..."
+  gets cut before the driver is named.
+- Too large (1024+): retrieval becomes imprecise. A 1024-token chunk
+  might contain both the risk section and the growth section —
+  asking about risks retrieves irrelevant growth text too.
+- 512 is the community standard for dense retrieval and matches
+  the max sequence length of most sentence-transformer models.
+
+Why 64-token overlap:
+- Without overlap: a key sentence that falls at a chunk boundary
+  appears in neither chunk cleanly. The embedding captures half
+  the sentence, retrieval misses it.
+- With overlap: the boundary sentence appears fully in at least
+  one chunk. 64 tokens (~256 chars) is typically 2-3 sentences —
+  enough to capture any boundary sentence without doubling storage.
+
+Why sentence-aware (not character-based):
+- Splitting at exactly 512*4=2048 chars cuts mid-sentence.
+- Mid-sentence chunks embed poorly — the vector represents an
+  incomplete thought.
+- Sentence-aware splitting ensures each chunk is a coherent unit.
+
+### Question I can answer cold
+"Why not just split every 500 characters?"
+"Character splitting cuts mid-sentence. The embedding then represents
+a fragment, not a thought. When you query 'what did management say
+about margins', a fragment embedding matches poorly. Sentence-aware
+splitting ensures every chunk is semantically complete, which
+directly improves retrieval precision."
+
+### What I would do differently in production
+- Use a proper tokenizer (tiktoken or the model's own tokenizer)
+  instead of len(text)//4. The 1 token = 4 chars approximation
+  breaks on Hindi/regional text in Indian annual reports.
+- Detect and preserve tables separately — pdfplumber has
+  extract_tables() which keeps table structure intact.
+  Text-chunked tables lose their row/column relationships.
