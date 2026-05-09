@@ -787,3 +787,74 @@ normalises by document length (long documents get penalised
 for having high raw TF just because they are long). These
 make BM25 consistently better than TF-IDF for retrieval,
 which is why it is still the default in Elasticsearch."
+
+---
+## RAG — Step 5: Generator and Pipeline
+
+### What I built
+- finsight/rag/generator.py — LLM grounded answer generation
+- finsight/rag/pipeline.py — full orchestration: ingest + query
+
+### The concept: why RAG prevents hallucination (and its limits)
+
+RAG reduces hallucination because the LLM's context window
+contains the actual source text. Claude is instructed to only
+use the provided excerpts. If "₹9,000 crore" is in the chunk,
+the answer contains "₹9,000 crore". If it is not, the system
+prompt forces "I could not find this information."
+
+The limit: RAG prevents hallucination about facts IN the document.
+It does not prevent the LLM from:
+- Misquoting a number (reading "9,000" as "90,000")
+- Confidently stating something from a low-quality chunk
+
+This is why retrieval quality matters so much — a wrong chunk
+leads to a wrong answer even with a perfect system prompt.
+
+### The decision I can defend: "I could not find" over silence
+
+Some RAG systems return an empty answer when retrieval fails.
+I instruct the model to say explicitly "I could not find this
+information in the uploaded document."
+
+Why: a financial analyst needs to know whether the absence of
+an answer means (a) the model failed or (b) the document
+genuinely does not contain that information. Explicit "not found"
+gives that signal. Silence is ambiguous.
+
+### The decision I can defend: batch size 32 for ingestion
+
+Embedding 32 chunks at once vs 1 at a time:
+- 1 at a time: model overhead per call dominates. 1000 chunks
+  = 1000 overhead calls.
+- 32 at once: model processes in one forward pass,
+  GPU/CPU batching applies. ~10-15x faster in practice.
+- Too large (512+): exceeds memory on CPU inference.
+32 is the standard default for sentence-transformers on CPU.
+
+### The hard problem: BM25 index survives only in memory
+
+ChromaDB persists vectors to disk. BM25 index does not —
+it is rebuilt in memory from the chunk corpus.
+
+If the server restarts, the BM25 index is gone.
+My pipeline.query() handles this: if doc_id not in
+self._chunk_cache, it re-fetches all chunks from ChromaDB
+and rebuilds the BM25 index before retrieval.
+
+This is a real production concern. The production solution
+is to serialise the BM25 index to disk with pickle alongside
+the ChromaDB directory, or move to a dedicated search service
+like Elasticsearch that persists both.
+
+### Question I can answer cold
+"How does your RAG system prevent hallucination?"
+"Two ways. First, the system prompt explicitly instructs Claude
+to only use the provided excerpts and to say 'I could not find
+this information' if the answer is absent — it cannot use
+outside knowledge. Second, every answer must include [Page X]
+citations. If Claude cannot cite a page, it cannot make the
+claim. The remaining risk is retrieval failure — if the wrong
+chunk is retrieved, Claude answers correctly from the wrong
+context. That is why retrieval quality (hybrid search, good
+chunking) is more important than prompt engineering for RAG."
