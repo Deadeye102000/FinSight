@@ -722,3 +722,68 @@ all vectors. It finds the true nearest neighbour ~99% of the time
 in O(log n) vs O(n) for exact search. At 100,000 vectors with 384
 dimensions, exact search requires 38.4 million multiplications per
 query. HNSW does it in roughly 17 comparisons."
+
+---
+## RAG — Step 4: Hybrid Retrieval (Dense + BM25 + RRF)
+
+### What I built
+- finsight/rag/retriever.py
+- HybridRetriever: ChromaDB dense + BM25 sparse, fused with RRF
+- Default weights: dense=0.7, sparse=0.3
+
+### The concept: why hybrid search
+
+Dense retrieval (embeddings) captures meaning.
+"Revenue grew strongly" matches "sales increased significantly"
+even though no words overlap. This is the superpower of embeddings.
+
+BM25 captures exact terms.
+BM25 score for a document = sum of:
+  IDF(term) * (TF * (k1+1)) / (TF + k1 * (1 - b + b * doc_len/avgdl))
+where k1=1.5, b=0.75 are standard constants.
+IDF is high for rare terms. "EBITDA" appears in few chunks —
+high IDF. "the" appears everywhere — low IDF, ignored.
+
+Weakness of dense alone:
+"₹4,200 crore revenue" embeds similarly to "₹4,800 crore revenue"
+because the sentence structure is identical. If you ask
+"what was the exact revenue figure", dense retrieval cannot
+distinguish them. BM25 on "4,200" finds the exact match.
+
+### The concept: RRF (Reciprocal Rank Fusion)
+
+Problem: dense and sparse return different scores on different scales.
+Dense similarity: 0.0 to 1.0.
+BM25 score: 0.0 to ~15.0 depending on corpus.
+You cannot average them directly.
+
+RRF converts ranks (not scores) into a combined score:
+  score(chunk) = Σ weight_i * (1 / (rank_i + 60))
+
+The constant 60 is the RRF constant (from the original 2009 paper).
+It controls how much rank-1 dominates rank-2:
+  rank-1: 1/(1+60) = 0.0164
+  rank-2: 1/(2+60) = 0.0161
+  rank-10: 1/(10+60) = 0.0143
+The gap between ranks is small — a rank-1 in one method
+and rank-3 in another fuses well. Without the constant (using
+just 1/rank), rank-1 would dominate too heavily.
+
+### The decision I can defend: dense_weight=0.7
+
+Financial documents are mostly narrative with some specific data.
+"Management expects margins to improve driven by automation" → dense.
+"EBITDA margin 24.3% vs 21.8% last quarter" → sparse.
+0.7/0.3 reflects that ratio. If the document were a data sheet
+full of numbers, I would flip to 0.3/0.7.
+
+### Question I can answer cold
+"What is BM25 and how does it differ from TF-IDF?"
+"Both weight terms by frequency and rarity. TF-IDF simply
+multiplies TF * IDF. BM25 adds two improvements: it saturates
+term frequency (adding the 20th occurrence of a word matters
+less than the 1st — TF-IDF treats them linearly), and it
+normalises by document length (long documents get penalised
+for having high raw TF just because they are long). These
+make BM25 consistently better than TF-IDF for retrieval,
+which is why it is still the default in Elasticsearch."
