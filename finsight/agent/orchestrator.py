@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from anthropic import Anthropic
@@ -154,14 +155,26 @@ Be specific — cite actual numbers from the tools, never make up data."""
             return await self._run_with_mcp_openai(query)
         return await self._run_with_mcp_anthropic(query)
 
-    async def _run_with_mcp_anthropic(self, query: str) -> Dict[str, Any]:
-        # Start MCP server process
-        server_params = StdioServerParameters(
-            command=sys.executable,
-            args=[self.mcp_server_path],
-            env=None,
+    def _mcp_server_params(self) -> StdioServerParameters:
+        server_path = Path(self.mcp_server_path).resolve()
+        project_root = server_path.parents[2]
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            str(project_root)
+            if not existing_pythonpath
+            else os.pathsep.join([str(project_root), existing_pythonpath])
         )
 
+        return StdioServerParameters(
+            command=sys.executable,
+            args=[str(server_path)],
+            env=env,
+            cwd=str(project_root),
+        )
+
+    async def _run_with_mcp_anthropic(self, query: str) -> Dict[str, Any]:
+        server_params = self._mcp_server_params()
         tools_called = []
         tool_results = {}
 
@@ -271,11 +284,7 @@ Be specific — cite actual numbers from the tools, never make up data."""
         }
 
     async def _run_with_mcp_openai(self, query: str) -> Dict[str, Any]:
-        server_params = StdioServerParameters(
-            command=sys.executable,
-            args=[self.mcp_server_path],
-            env=None,
-        )
+        server_params = self._mcp_server_params()
 
         tools_called: list[str] = []
         tool_results: dict[str, Any] = {}

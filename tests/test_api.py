@@ -171,8 +171,10 @@ async def test_request_id_header_present():
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_enforced():
+async def test_rate_limit_enforced(monkeypatch):
     """Send 11 requests rapidly, 11th returns 429."""
+    monkeypatch.setattr("finsight.api.main.RATE_LIMIT_REQUESTS", 10)
+    monkeypatch.setattr("finsight.api.main.RATE_LIMIT_WINDOW_SECONDS", 60)
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         for i in range(10):

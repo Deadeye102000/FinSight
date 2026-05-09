@@ -441,6 +441,8 @@ def render_sidebar() -> tuple[str, str, bool]:
 
         if "ticker_input" not in st.session_state:
             st.session_state.ticker_input = "AAPL"
+        if "preset_ticker" in st.session_state:
+            st.session_state.ticker_input = st.session_state.pop("preset_ticker")
 
         ticker = st.text_input(
             "Stock ticker",
@@ -453,7 +455,7 @@ def render_sidebar() -> tuple[str, str, bool]:
             cols = st.columns(3)
             for col, preset in zip(cols, PRESET_TICKERS[row : row + 3], strict=False):
                 if col.button(preset, width="stretch"):
-                    st.session_state.ticker_input = preset
+                    st.session_state.preset_ticker = preset
                     st.rerun()
 
         mode = st.radio("Research mode", ["Quick", "Full"], horizontal=True)

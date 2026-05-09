@@ -469,7 +469,86 @@ These make you sound thoughtful and help turn the interview into a real engineer
 
 ---
 
-## 12. Red Flags To Avoid
+## 12. Debugging Case Studies
+
+Use these as real examples of production-style debugging: identify the layer, verify the assumption, make the failure observable, then fix the smallest useful thing.
+
+### Case Study A: NewsAPI key configured but app says it is missing
+
+**Symptom:** The UI showed: `NEWS_API_KEY is not set. Returning mock sentiment data.`
+
+**Root cause:** The `.env` file contained the variable name, but the value was empty: `NEWS_API_KEY=`. In another path, the sentiment tool could also be imported directly without loading `.env`, so relying only on the orchestrator to call `load_dotenv()` was fragile.
+
+**Debugging steps:**
+
+- Checked the exact environment variable name expected by the code: `NEWS_API_KEY`.
+- Parsed `.env` with `dotenv_values()` and printed only presence, length, and non-empty status, not the secret.
+- Verified that the error was raised before any NewsAPI request, so it was not an Indian-news coverage problem.
+
+**Fix:** Put the actual key in `.env`, restart the backend, and load the root `.env` from the sentiment module as well. Also rotate any key that was accidentally pasted into logs or chat.
+
+**Interview framing:** "I did not assume the third-party API was wrong. I first verified whether the process could actually see the secret. The failure was configuration, not provider coverage."
+
+### Case Study B: Hugging Face 500 while loading FinBERT
+
+**Symptom:** A traceback showed `500 Internal Server Error` from `huggingface.co/api/models/ProsusAI/finbert/discussions`.
+
+**Root cause:** This was not NewsAPI. It came from Transformers while loading the local FinBERT sentiment model. The loader tried to access Hugging Face model metadata for safetensors conversion, and Hugging Face returned a server-side 500.
+
+**Debugging steps:**
+
+- Followed the traceback to the failing external service and endpoint.
+- Separated the news-fetching layer from the sentiment-classification layer.
+- Confirmed the app used `pipeline("sentiment-analysis", model="ProsusAI/finbert")`.
+
+**Fix:** Load FinBERT with normal PyTorch weights by passing `model_kwargs={"use_safetensors": False}`. This avoids the extra safetensors conversion metadata call while preserving local FinBERT inference.
+
+**Interview framing:** "The API key was not involved. The failure was in the ML dependency path, so I reduced dependence on a flaky metadata call and kept the sentiment model local."
+
+### Case Study C: Local 429 on `/tools/filings`
+
+**Symptom:** The UI or API returned `429 Client Error: Too Many Requests for url: http://localhost:8000/tools/filings`.
+
+**Root cause:** This was the app's own FastAPI rate limiter, not BSE/NSE or NewsAPI. The middleware allowed 10 requests per 60 seconds per client IP. A full Streamlit analysis can call multiple endpoints quickly, and repeated refreshes can hit the local limit.
+
+**Debugging steps:**
+
+- Checked the failing URL: it was `localhost`, so the rejection came from our backend.
+- Found `RateLimitMiddleware` in `finsight/api/main.py`.
+- Compared the UI flow with the limit: full analysis can call research plus direct tool endpoints, so the demo can exceed 10 requests/minute.
+
+**Fix:** Keep the default test-friendly limit at 10 requests per 60 seconds, but make it configurable with `FINSIGHT_RATE_LIMIT_REQUESTS` and `FINSIGHT_RATE_LIMIT_WINDOW_SECONDS`. Return a `Retry-After` header on 429 so clients can back off cleanly.
+
+**How to handle locally:** For demos, set a higher limit in `.env`, such as:
+
+```env
+FINSIGHT_RATE_LIMIT_REQUESTS=60
+FINSIGHT_RATE_LIMIT_WINDOW_SECONDS=60
+```
+
+Then restart the backend. In production, rate limits should usually be user/API-key based, backed by Redis, and coordinated with provider-specific limits.
+
+**Interview framing:** "A 429 is not always from the external provider. I checked where the URL pointed, found it was our local API, and made the limit configurable instead of removing protection entirely."
+
+### Case Study D: `TaskGroup` error in the research report
+
+**Symptom:** The report section showed: `Error occurred: unhandled errors in a TaskGroup (1 sub-exception)`.
+
+**Root cause:** The MCP client was launching the server by file path: `finsight/mcp_server/server.py`. When Python runs a script by path, it puts that script's directory on `sys.path`, not necessarily the project root. The MCP subprocess crashed with `ModuleNotFoundError: No module named 'finsight'`, and the async MCP wrapper surfaced that subprocess crash as a generic `TaskGroup` error.
+
+**Debugging steps:**
+
+- Reproduced the research call outside Streamlit to see stderr from the MCP server process.
+- Found the real exception under the wrapper error: `ModuleNotFoundError`.
+- Verified the MCP boundary directly by launching the server and calling `list_tools()` without involving the LLM.
+
+**Fix:** Build MCP subprocess parameters in one helper that sets `cwd` to the project root and prepends the project root to `PYTHONPATH`. Both Anthropic and OpenAI orchestration paths now use that helper.
+
+**Interview framing:** "The visible error was an async wrapper message, not the real cause. I reproduced the lower-level subprocess startup, found the import-path failure, and fixed the process environment instead of changing tool logic."
+
+---
+
+## 13. Red Flags To Avoid
 
 - Do not say "the AI knows the stock price." The tools retrieve the stock price.
 - Do not quote benchmark numbers unless you have actually measured them.
@@ -482,6 +561,6 @@ These make you sound thoughtful and help turn the interview into a real engineer
 
 ---
 
-## 13. Final Memorized Close
+## 14. Final Memorized Close
 
 "The main thing I learned from FinSight is that useful AI products are not just prompts. They are systems: data contracts, tools, caching, error handling, UI transparency, and evals. The LLM is the synthesis layer, but the engineering around it is what makes the output trustworthy."

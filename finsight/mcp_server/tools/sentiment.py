@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from transformers import pipeline
 from transformers.pipelines import Pipeline
@@ -15,6 +17,7 @@ from finsight.mcp_server.utils.validators import validate_n, validate_ticker
 
 
 logger = logging.getLogger(__name__)
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
 NEWS_API_URL = "https://newsapi.org/v2/everything"
 FINBERT_MODEL = "ProsusAI/finbert"
@@ -61,7 +64,12 @@ def load_finbert_model() -> Pipeline:
 
     if _finbert_pipeline is None:
         logger.info("Loading FinBERT model %s", FINBERT_MODEL)
-        _finbert_pipeline = pipeline("sentiment-analysis", model=FINBERT_MODEL, tokenizer=FINBERT_MODEL)
+        _finbert_pipeline = pipeline(
+            "sentiment-analysis",
+            model=FINBERT_MODEL,
+            tokenizer=FINBERT_MODEL,
+            model_kwargs={"use_safetensors": False},
+        )
     return _finbert_pipeline
 
 

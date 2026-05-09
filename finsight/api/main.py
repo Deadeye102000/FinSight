@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 import uuid
 from collections import defaultdict
@@ -48,6 +49,8 @@ class ToolRequest(BaseModel):
 
 # Rate limiting storage: ip -> list of timestamps
 rate_limit_store: Dict[str, List[float]] = defaultdict(list)
+RATE_LIMIT_REQUESTS = int(os.getenv("FINSIGHT_RATE_LIMIT_REQUESTS", "10"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("FINSIGHT_RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -75,14 +78,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
         timestamps = rate_limit_store[client_ip]
-        # Remove timestamps older than 60 seconds
-        timestamps[:] = [t for t in timestamps if now - t < 60]
-        if len(timestamps) >= 10:
-            return _format_error_response(
+        timestamps[:] = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
+        if len(timestamps) >= RATE_LIMIT_REQUESTS:
+            retry_after = max(1, int(RATE_LIMIT_WINDOW_SECONDS - (now - timestamps[0])))
+            response = _format_error_response(
                 request,
-                "Rate limit exceeded: max 10 requests per minute",
+                f"Rate limit exceeded: max {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW_SECONDS} seconds",
                 status.HTTP_429_TOO_MANY_REQUESTS,
             )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
         timestamps.append(now)
         return await call_next(request)
 

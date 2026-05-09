@@ -222,6 +222,22 @@ def test_mcp_tool_to_openai_tool(monkeypatch):
     }
 
 
+def test_mcp_server_params_include_project_root(monkeypatch):
+    """MCP subprocess can import the finsight package when launched by path."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    agent = FinSightAgent(
+        "/Users/Deadeye/Desktop/Projects/FinSight/finsight/mcp_server/server.py",
+        llm_provider="openai",
+    )
+
+    params = agent._mcp_server_params()
+
+    assert params.cwd == "/Users/Deadeye/Desktop/Projects/FinSight"
+    assert params.args == ["/Users/Deadeye/Desktop/Projects/FinSight/finsight/mcp_server/server.py"]
+    assert params.env is not None
+    assert params.env["PYTHONPATH"].split(":")[0] == "/Users/Deadeye/Desktop/Projects/FinSight"
+
+
 def test_openai_helpers_parse_usage_and_text(monkeypatch):
     """OpenAI response helpers tolerate SDK response shapes."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
