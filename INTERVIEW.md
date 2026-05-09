@@ -665,3 +665,60 @@ A short sentence and a long sentence expressing the same idea will
 have different magnitudes but nearly the same angle. Euclidean
 distance conflates direction and magnitude, so it penalises length
 differences incorrectly."
+
+---
+## RAG — Step 3: Vector Store (ChromaDB)
+
+### What I built
+- finsight/rag/vector_store.py
+- ChromaDB PersistentClient, one collection per document
+- Cosine similarity space, metadata preserved per chunk
+
+### The concept: how vector search actually works
+ChromaDB uses HNSW (Hierarchical Navigable Small World) graphs
+for approximate nearest neighbour search.
+
+HNSW builds a multi-layer graph where:
+- Bottom layer: all vectors connected to close neighbours
+- Upper layers: progressively fewer nodes, longer-range connections
+- Search: enter at top layer, greedily descend to nearest neighbour
+
+Why approximate and not exact:
+Exact nearest neighbour in 384 dimensions requires comparing your
+query against every stored vector — O(n * d). With 50,000 chunks
+from a large annual report, that is 19.2 million multiplications
+per query. HNSW finds the true nearest neighbour ~99% of the time
+in O(log n) comparisons.
+
+### The decision I can defend: one collection per document
+Alternative: one global collection for all documents, filter by
+metadata (doc_id == "tcs_annual_2024").
+
+Why per-document collections instead:
+1. Query isolation: no cross-document contamination possible
+2. Clean deletion: delete_document() drops the collection,
+   no leftover chunks from other documents
+3. Chunk count accuracy: collection.count() always refers to
+   exactly one document
+
+The tradeoff: you cannot do cross-document retrieval
+("find all mentions of margin pressure across all ingested reports").
+For FinSight's use case (one document at a time Q&A),
+this is the right call.
+
+### The bug I avoided: n_results > collection.count()
+ChromaDB raises ValueError if you request more results than
+exist in the collection. My query() method caps n_results at
+min(k, collection.count()). Without this, querying a collection
+with 3 chunks and k=5 crashes. Always handle this edge case.
+
+### Question I can answer cold
+"What is HNSW and why is it used in vector databases?"
+"HNSW is an approximate nearest neighbour algorithm that organises
+vectors into a multi-layer graph. You enter the search at the top
+layer with few nodes and long-range connections, greedily descend
+to your nearest neighbour, then refine at the bottom layer with
+all vectors. It finds the true nearest neighbour ~99% of the time
+in O(log n) vs O(n) for exact search. At 100,000 vectors with 384
+dimensions, exact search requires 38.4 million multiplications per
+query. HNSW does it in roughly 17 comparisons."
