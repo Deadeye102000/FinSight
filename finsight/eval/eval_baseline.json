@@ -1,0 +1,212 @@
+[
+  {
+    "scenario_id": "scenario_1_us_tech_risk",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 5521.86,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXCZXBi4BKXrJMaNoP'}"
+  },
+  {
+    "scenario_id": "scenario_1_us_tech_risk",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 860.07,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXE44r5YGmPaMhGSV1'}"
+  },
+  {
+    "scenario_id": "scenario_1_us_tech_risk",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1104.03,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXFe4S7d49pFyCs6T3'}"
+  },
+  {
+    "scenario_id": "scenario_2_indian_conglomerate",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 9042.72,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXH9boBy3u4XNvYkQJ'}"
+  },
+  {
+    "scenario_id": "scenario_2_indian_conglomerate",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1401.21,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXJYSDVfvxnSFvU5n9'}"
+  },
+  {
+    "scenario_id": "scenario_2_indian_conglomerate",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1431.12,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXM8xMCuMXnMzN2vFc'}"
+  },
+  {
+    "scenario_id": "scenario_3_indian_it_leader",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 2402.58,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXNpf3XkaFGYbKP9uC'}"
+  },
+  {
+    "scenario_id": "scenario_3_indian_it_leader",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1635.18,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXQa5hn9o1aN8V37gX'}"
+  },
+  {
+    "scenario_id": "scenario_3_indian_it_leader",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1333.13,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXS6rgZ9mUn3uu6Qet'}"
+  },
+  {
+    "scenario_id": "scenario_4_us_chipmaker",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 2610.44,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXTXBrAqPWCoPC6xUz'}"
+  },
+  {
+    "scenario_id": "scenario_4_us_chipmaker",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1567.85,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXVieG7NxDyA33BLVs'}"
+  },
+  {
+    "scenario_id": "scenario_4_us_chipmaker",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1598.76,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXXpQ3VA4DzqS9Et3M'}"
+  },
+  {
+    "scenario_id": "scenario_5_indian_banking",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 2783.38,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXZeXimBUkukzRdhrE'}"
+  },
+  {
+    "scenario_id": "scenario_5_indian_banking",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1420.92,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXbBoLdiNUbPfFHoSM'}"
+  },
+  {
+    "scenario_id": "scenario_5_indian_banking",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1520.02,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXcWgA4rSywytqv5J6'}"
+  },
+  {
+    "scenario_id": "scenario_6_us_ev_maker",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 2839.45,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXe5BifATMDVqgza1M'}"
+  },
+  {
+    "scenario_id": "scenario_6_us_ev_maker",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 853.75,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXfXkJRMmwNffxkLQf'}"
+  },
+  {
+    "scenario_id": "scenario_6_us_ev_maker",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 941.46,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXh5Wh5KoE7NtHdpGv'}"
+  },
+  {
+    "scenario_id": "scenario_7_indian_auto",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 7829.29,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXibYSMzgSBP4EqgrJ'}"
+  },
+  {
+    "scenario_id": "scenario_7_indian_auto",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1377.28,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXjytKkKAnmK3GPsSn'}"
+  },
+  {
+    "scenario_id": "scenario_7_indian_auto",
+    "scores": {
+      "task_success": null,
+      "guardrail_adherence": 1.0,
+      "latency_ms": 1296.76,
+      "cost_usd": 0.0
+    },
+    "notes": "LLM grading failed: Error code: 401 - {'type': 'error', 'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'}, 'request_id': 'req_011CdwiXmWuwpivtf14N4aPS'}"
+  }
+]
