@@ -22,11 +22,27 @@ def test_mcp_fundamentals_wrapper_delegates() -> None:
 
 
 def test_mcp_sentiment_wrapper_delegates() -> None:
-    with patch.object(server, "get_news_sentiment_tool", return_value={"overall_sentiment": "Positive"}) as mock_tool:
-        result = server.get_news_sentiment("AAPL", "Apple", n=3)
+    with patch.object(server, "get_news_sentiment_tool", return_value={"headline_count": 5}) as mock_tool:
+        result = server.get_news_sentiment("AAPL", days_back=7)
 
-    assert result == {"overall_sentiment": "Positive"}
-    mock_tool.assert_called_once_with(ticker="AAPL", company_name="Apple", n=3)
+    assert result == {"headline_count": 5}
+    mock_tool.assert_called_once_with(ticker="AAPL", days_back=7)
+
+
+def test_mcp_peer_comparison_wrapper_delegates() -> None:
+    with patch.object(server, "get_peer_comparison_tool", return_value={"main_ticker": "AAPL"}) as mock_tool:
+        result = server.get_peer_comparison("AAPL", ["MSFT", "GOOGL"])
+
+    assert result == {"main_ticker": "AAPL"}
+    mock_tool.assert_called_once_with(ticker="AAPL", peer_tickers=["MSFT", "GOOGL"])
+
+
+def test_mcp_filing_text_wrapper_delegates() -> None:
+    with patch.object(server, "get_filing_text_tool", return_value={"filing_type": "annual_report"}) as mock_tool:
+        result = server.get_filing_text("TCS.NS", filing_type="annual_report")
+
+    assert result == {"filing_type": "annual_report"}
+    mock_tool.assert_called_once_with(ticker="TCS.NS", filing_type="annual_report")
 
 
 def test_mcp_announcements_wrapper_delegates() -> None:

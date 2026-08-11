@@ -28,7 +28,8 @@ class PeerComparisonRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     ticker: str = Field(..., description="Main ticker to compare")
-    peers: list[str] = Field(..., description="Two to five peer tickers")
+    peers: list[str] = Field(default_factory=list, description="Two to five peer tickers")
+    peer_tickers: list[str] | None = Field(default=None, description="Two to five peer tickers (alias)")
     include_sentiment: bool = Field(default=False, description="Include slower sentiment lookup")
 
     @field_validator("ticker")
@@ -39,23 +40,32 @@ class PeerComparisonRequest(BaseModel):
             raise ValueError("Ticker must be non-empty, 20 chars or fewer, and contain no spaces.")
         return normalized
 
-    @field_validator("peers")
+    @field_validator("peers", "peer_tickers", mode="before")
     @classmethod
-    def validate_peers_field(cls, value: list[str]) -> list[str]:
-        normalized = [peer.upper() for peer in value]
-        if not validate_peers_list(normalized):
+    def validate_peers_field(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [peer.upper() for peer in value if isinstance(peer, str)]
+        return value
+
+    def get_resolved_peers(self) -> list[str]:
+        resolved = self.peer_tickers if self.peer_tickers else self.peers
+        if not validate_peers_list(resolved):
             raise ValueError("Peers must contain 2 to 5 unique non-empty ticker strings.")
-        return normalized
+        return resolved
 
 
 def _empty_result(ticker: str, error: str | None) -> dict[str, Any]:
     """Return a stable peer-comparison payload shape."""
     return {
         "main_ticker": ticker,
+        "peer_tickers": [],
         "comparison_date": date.today().isoformat(),
         "metrics_compared": [],
         "rankings": {},
         "winner_overall": "",
+        "comparison_table": [],
         "summary_table": [],
         "relative_valuation": "",
         "error": error,
@@ -82,8 +92,11 @@ def _fetch_ticker_metrics_sync(ticker: str, include_sentiment: bool) -> dict[str
         "company_name": fundamentals.get("company_name") or "",
         "current_price": price.get("current_price"),
         "currency": price.get("currency") or fundamentals.get("currency") or "",
+        "reporting_currency": fundamentals.get("reporting_currency") or fundamentals.get("currency") or price.get("currency") or "",
+        "normalized_currency": "USD",
         "market_cap": fundamentals.get("market_cap"),
         "pe_ratio": fundamentals.get("pe_ratio"),
+        "revenue_growth": fundamentals.get("revenue_growth"),
         "pb_ratio": fundamentals.get("pb_ratio"),
         "debt_to_equity": fundamentals.get("debt_to_equity"),
         "roe": fundamentals.get("roe"),
@@ -219,16 +232,28 @@ def _relative_valuation(main_ticker: str, peers: list[str], summary_table: list[
     )
 
 
-def compare_peers(ticker: str, peers: list[str], include_sentiment: bool = False) -> dict[str, Any]:
+def compare_peers(
+    ticker: str,
+    peers: list[str] | None = None,
+    peer_tickers: list[str] | None = None,
+    include_sentiment: bool = False,
+) -> dict[str, Any]:
     """Compare a main ticker against peers using price and fundamentals tools."""
-    logger.info("Processing peer comparison request for ticker=%s peers=%s", ticker, peers)
+    logger.info("Processing peer comparison request for ticker=%s peers=%s peer_tickers=%s", ticker, peers, peer_tickers)
 
     try:
-        request = PeerComparisonRequest(ticker=ticker, peers=peers, include_sentiment=include_sentiment)
-    except ValidationError as exc:
-        return _empty_result(ticker, exc.errors()[0]["msg"])
+        request = PeerComparisonRequest(
+            ticker=ticker,
+            peers=peers or [],
+            peer_tickers=peer_tickers,
+            include_sentiment=include_sentiment,
+        )
+        resolved_peers = request.get_resolved_peers()
+    except (ValidationError, ValueError) as exc:
+        msg = exc.errors()[0]["msg"] if isinstance(exc, ValidationError) else str(exc)
+        return _empty_result(ticker, msg)
 
-    tickers = [request.ticker, *request.peers]
+    tickers = [request.ticker, *resolved_peers]
     if len(set(tickers)) != len(tickers):
         return _empty_result(request.ticker, "Main ticker must not also appear in peers.")
 
@@ -239,14 +264,22 @@ def compare_peers(ticker: str, peers: list[str], include_sentiment: bool = False
 
         return {
             "main_ticker": request.ticker,
+            "peer_tickers": resolved_peers,
             "comparison_date": date.today().isoformat(),
             "metrics_compared": metrics_compared,
             "rankings": rankings,
             "winner_overall": winner,
+            "comparison_table": summary_table,
             "summary_table": summary_table,
-            "relative_valuation": _relative_valuation(request.ticker, request.peers, summary_table),
+            "relative_valuation": _relative_valuation(request.ticker, resolved_peers, summary_table),
             "error": None,
         }
     except Exception as exc:  # pragma: no cover - defensive around provider/tool internals
         logger.exception("Failed to compare peers for %s", request.ticker)
         return _empty_result(request.ticker, str(exc))
+
+
+def get_peer_comparison(ticker: str, peer_tickers: list[str]) -> dict[str, Any]:
+    """Fetch key ratios for a ticker and its peers, returned as a comparable table."""
+    logger.info("Processing get_peer_comparison request for ticker=%s peer_tickers=%s", ticker, peer_tickers)
+    return compare_peers(ticker=ticker, peer_tickers=peer_tickers, include_sentiment=False)

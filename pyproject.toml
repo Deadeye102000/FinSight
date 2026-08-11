@@ -10,5 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+finsight-research = "finsight.orchestrator.cli:app"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

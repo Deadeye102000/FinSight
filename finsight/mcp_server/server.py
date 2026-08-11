@@ -10,8 +10,12 @@ from mcp.server.fastmcp import FastMCP
 from finsight.mcp_server.tools.announcements import (
     get_corporate_announcements as get_corporate_announcements_tool,
 )
+from finsight.mcp_server.tools.filings import get_filing_text as get_filing_text_tool
 from finsight.mcp_server.tools.fundamentals import get_fundamentals as get_fundamentals_tool
-from finsight.mcp_server.tools.peers import compare_peers as compare_peers_tool
+from finsight.mcp_server.tools.peers import (
+    compare_peers as compare_peers_tool,
+    get_peer_comparison as get_peer_comparison_tool,
+)
 from finsight.mcp_server.tools.price import get_stock_price as get_stock_price_tool
 from finsight.mcp_server.tools.sentiment import get_news_sentiment as get_news_sentiment_tool
 
@@ -40,10 +44,24 @@ def get_fundamentals(ticker: str) -> dict[str, Any]:
 
 
 @server.tool()
-def get_news_sentiment(ticker: str, company_name: str, n: int = 10) -> dict[str, Any]:
-    """Return recent headline sentiment for a stock ticker using local FinBERT."""
-    logger.info("MCP news sentiment invocation received for %s", ticker)
-    return get_news_sentiment_tool(ticker=ticker, company_name=company_name, n=n)
+def get_news_sentiment(ticker: str, days_back: int = 7) -> dict[str, Any]:
+    """Return recent headlines and timestamps for a stock ticker."""
+    logger.info("MCP news sentiment invocation received for %s (days_back=%d)", ticker, days_back)
+    return get_news_sentiment_tool(ticker=ticker, days_back=days_back)
+
+
+@server.tool()
+def get_peer_comparison(ticker: str, peer_tickers: list[str]) -> dict[str, Any]:
+    """Return key ratios (P/E, market cap, revenue growth) for a ticker and its peers as a comparable table."""
+    logger.info("MCP peer comparison invocation received for %s", ticker)
+    return get_peer_comparison_tool(ticker=ticker, peer_tickers=peer_tickers)
+
+
+@server.tool()
+def get_filing_text(ticker: str, filing_type: str = "annual_report") -> dict[str, Any]:
+    """Return the most recent annual report or filing text for a ticker."""
+    logger.info("MCP filing text invocation received for %s (filing_type=%s)", ticker, filing_type)
+    return get_filing_text_tool(ticker=ticker, filing_type=filing_type)
 
 
 @server.tool()

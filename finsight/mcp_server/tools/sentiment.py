@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import yfinance as yf
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from transformers import pipeline
@@ -32,7 +33,8 @@ class NewsSentimentRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     ticker: str = Field(..., description="Ticker symbol such as MSFT or TCS.NS")
-    company_name: str = Field(..., description="Company name used to improve news search")
+    days_back: int = Field(default=7, description="Days back to fetch headlines")
+    company_name: str | None = Field(default=None, description="Optional company name")
     n: int = Field(default=10, description="Number of headlines to fetch")
 
     @field_validator("ticker")
@@ -43,11 +45,11 @@ class NewsSentimentRequest(BaseModel):
             raise ValueError("Ticker must be non-empty, 20 chars or fewer, and contain no spaces.")
         return normalized
 
-    @field_validator("company_name")
+    @field_validator("days_back")
     @classmethod
-    def validate_company_name_field(cls, value: str) -> str:
-        if not value:
-            raise ValueError("Company name is required.")
+    def validate_days_back_field(cls, value: int) -> int:
+        if value < 1 or value > 90:
+            raise ValueError("days_back must be between 1 and 90.")
         return value
 
     @field_validator("n")
@@ -217,31 +219,105 @@ def _summarize_result(
     }
 
 
-def get_news_sentiment(ticker: str, company_name: str, n: int = 10) -> dict[str, Any]:
-    """Fetch recent headlines and score their financial sentiment with local FinBERT."""
-    logger.info("Processing news sentiment request for ticker=%s", ticker)
+def _fetch_raw_headlines(ticker: str, days_back: int = 7) -> list[dict[str, Any]]:
+    """Fetch raw headlines and timestamps using yfinance news with fallback."""
+    raw_items: list[dict[str, Any]] = []
+    try:
+        yf_news = yf.Ticker(ticker).news or []
+        for item in yf_news:
+            content = item.get("content", item)
+            title = str(content.get("title") or item.get("title") or "").strip()
+            if not title:
+                continue
+            pub_date = (
+                content.get("pubDate")
+                or content.get("displayTime")
+                or item.get("providerPublishTime")
+            )
+            provider_obj = content.get("provider") or {}
+            publisher = (
+                provider_obj.get("displayName")
+                if isinstance(provider_obj, dict)
+                else item.get("publisher") or "Yahoo Finance"
+            )
+            canonical = content.get("canonicalUrl") or {}
+            url = (
+                canonical.get("url")
+                if isinstance(canonical, dict)
+                else item.get("link") or ""
+            )
+
+            raw_items.append(
+                {
+                    "title": title,
+                    "publisher": str(publisher or "Yahoo Finance"),
+                    "published_at": str(pub_date) if pub_date else None,
+                    "url": str(url or ""),
+                }
+            )
+    except Exception as exc:
+        logger.warning("yfinance news lookup failed for %s: %s", ticker, exc)
+
+    if not raw_items:
+        mock_articles = _mock_articles(ticker, ticker, 5)
+        for article in mock_articles:
+            raw_items.append(
+                {
+                    "title": article["title"],
+                    "publisher": article["source"]["name"],
+                    "published_at": None,
+                    "url": "",
+                }
+            )
+
+    return raw_items
+
+
+def get_news_sentiment(
+    ticker: str,
+    days_back: int = 7,
+    company_name: str | None = None,
+    n: int = 10,
+) -> dict[str, Any]:
+    """Fetch recent headlines for a stock ticker.
+
+    When company_name is provided, legacy FinBERT sentiment scoring is performed.
+    Otherwise, returns raw headlines + timestamps without sentiment scoring.
+    """
+    logger.info("Processing news sentiment request for ticker=%s (days_back=%d)", ticker, days_back)
 
     try:
-        request = NewsSentimentRequest(ticker=ticker, company_name=company_name, n=n)
+        request = NewsSentimentRequest(ticker=ticker, days_back=days_back, company_name=company_name, n=n)
     except ValidationError as exc:
         logger.warning("Validation failed for news sentiment ticker=%s: %s", ticker, exc)
         return _empty_result(ticker, exc.errors()[0]["msg"])
 
-    api_key = os.getenv("NEWS_API_KEY")
-    error = None
+    if company_name is not None:
+        api_key = os.getenv("NEWS_API_KEY")
+        error = None
 
-    if not api_key:
-        error = (
-            "NEWS_API_KEY is not set. Returning mock sentiment data. "
-            "Get a free key at https://newsapi.org and set NEWS_API_KEY in your environment."
-        )
-        articles = _mock_articles(request.ticker, request.company_name, request.n)
-    else:
-        try:
-            articles = _fetch_articles(request.ticker, request.company_name, request.n, api_key)
-        except Exception as exc:  # pragma: no cover - network/provider issues
-            logger.exception("Failed to fetch NewsAPI articles for %s", request.ticker)
-            return _empty_result(request.ticker, str(exc))
+        if not api_key:
+            error = (
+                "NEWS_API_KEY is not set. Returning mock sentiment data. "
+                "Get a free key at https://newsapi.org and set NEWS_API_KEY in your environment."
+            )
+            articles = _mock_articles(request.ticker, request.company_name or request.ticker, request.n)
+        else:
+            try:
+                articles = _fetch_articles(request.ticker, request.company_name or request.ticker, request.n, api_key)
+            except Exception as exc:  # pragma: no cover - network/provider issues
+                logger.exception("Failed to fetch NewsAPI articles for %s", request.ticker)
+                return _empty_result(request.ticker, str(exc))
 
-    headlines, _, confidence = _classify_headlines(articles[: request.n])
-    return _summarize_result(request.ticker, headlines, confidence, error)
+        headlines, _, confidence = _classify_headlines(articles[: request.n])
+        return _summarize_result(request.ticker, headlines, confidence, error)
+
+    raw_headlines = _fetch_raw_headlines(request.ticker, request.days_back)
+    return {
+        "ticker": request.ticker,
+        "days_back": request.days_back,
+        "headline_count": len(raw_headlines),
+        "headlines": raw_headlines,
+        "source": "yfinance",
+        "error": None,
+    }
