@@ -1,0 +1,65 @@
+[
+  {
+    "id": "scenario_1_us_tech_risk",
+    "input": {
+      "ticker": "AAPL",
+      "peer_tickers": ["MSFT", "GOOGL"],
+      "query": "summarize AAPL risk factors and revenue growth relative to peers"
+    },
+    "expected_behavior_description": "Returns comprehensive research report for AAPL including price technicals (RSI/SMA), valuation summary, FinBERT news sentiment breakdown, peer comparison table against MSFT and GOOGL, and grounded investment thesis."
+  },
+  {
+    "id": "scenario_2_indian_conglomerate",
+    "input": {
+      "ticker": "RELIANCE.NS",
+      "peer_tickers": ["TCS.NS", "ONGC.NS"],
+      "query": "compare RELIANCE.NS to its peers and retrieve annual report disclosures"
+    },
+    "expected_behavior_description": "Returns research report for RELIANCE.NS integrating BSE corporate disclosures RAG context, normalized USD valuation metrics, FinBERT headline sentiment classification, and peer ranking."
+  },
+  {
+    "id": "scenario_3_indian_it_leader",
+    "input": {
+      "ticker": "TCS.NS",
+      "peer_tickers": ["INFY.NS", "WIPRO.NS"],
+      "query": "analyze TCS.NS margins and annual report filing language"
+    },
+    "expected_behavior_description": "Returns research report for TCS.NS grounding investment thesis in retrieved BSE annual report excerpts and peer valuation comparison against INFY.NS and WIPRO.NS."
+  },
+  {
+    "id": "scenario_4_us_chipmaker",
+    "input": {
+      "ticker": "NVDA",
+      "peer_tickers": ["AMD", "INTC"],
+      "query": "evaluate NVDA market growth and competitive positioning"
+    },
+    "expected_behavior_description": "Returns research report for NVDA featuring technical indicators, fundamental ratios, headline sentiment classification, and chip sector peer ranking."
+  },
+  {
+    "id": "scenario_5_indian_banking",
+    "input": {
+      "ticker": "HDFCBANK.NS",
+      "peer_tickers": ["ICICIBANK.NS", "SBIN.NS"],
+      "query": "assess HDFCBANK.NS fundamentals and peer valuation"
+    },
+    "expected_behavior_description": "Returns research report for HDFCBANK.NS with normalized currency metrics, BSE disclosure filings retrieval, sentiment classification, and banking peer comparison."
+  },
+  {
+    "id": "scenario_6_us_ev_maker",
+    "input": {
+      "ticker": "TSLA",
+      "peer_tickers": ["F", "GM"],
+      "query": "analyze TSLA sentiment and relative peer valuation"
+    },
+    "expected_behavior_description": "Returns research report for TSLA featuring FinBERT news sentiment breakdown, aggregate signed sentiment score, price technicals, and auto sector peer comparison table."
+  },
+  {
+    "id": "scenario_7_indian_auto",
+    "input": {
+      "ticker": "MARUTI.NS",
+      "peer_tickers": ["TATAMOTORS.NS", "M&M.NS"],
+      "query": "evaluate MARUTI.NS valuation and recent annual disclosures"
+    },
+    "expected_behavior_description": "Returns research report for MARUTI.NS integrating BSE corporate filing context, FinBERT headline sentiment, and relative peer valuation metrics."
+  }
+]
