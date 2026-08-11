@@ -3,17 +3,104 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 import streamlit as st
 
 
 API_BASE_URL = os.getenv("FINSIGHT_API_URL", "http://localhost:8000").rstrip("/")
+API_DEFAULT_TIMEOUT_SECONDS = int(os.getenv("FINSIGHT_API_TIMEOUT_SECONDS", "120"))
+API_LONG_TIMEOUT_SECONDS = int(os.getenv("FINSIGHT_API_LONG_TIMEOUT_SECONDS", "300"))
+API_RETRY_COUNT = int(os.getenv("FINSIGHT_API_RETRY_COUNT", "2"))
+API_RETRY_BACKOFF_SECONDS = float(os.getenv("FINSIGHT_API_RETRY_BACKOFF_SECONDS", "1.0"))
+
+retry_strategy = Retry(
+    total=API_RETRY_COUNT,
+    connect=API_RETRY_COUNT,
+    read=API_RETRY_COUNT,
+    status=API_RETRY_COUNT,
+    status_forcelist=[429, 502, 503, 504],
+    allowed_methods=frozenset(["HEAD", "GET", "OPTIONS", "POST"]),
+    backoff_factor=API_RETRY_BACKOFF_SECONDS,
+    raise_on_status=False,
+)
+_API_SESSION = requests.Session()
+_API_SESSION.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+_API_SESSION.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+
 PRESET_TICKERS = ["AAPL", "MSFT", "GOOGL", "TSLA", "TCS.NS", "RELIANCE.NS"]
+INDIAN_DEMO_TICKERS = [
+    "TCS.NS",
+    "RELIANCE.NS",
+    "INFY.NS",
+    "HDFCBANK.NS",
+    "ICICIBANK.NS",
+    "WIPRO.NS",
+    "HINDUNILVR.NS",
+    "ITC.NS",
+    "SBIN.NS",
+    "BAJFINANCE.NS",
+    "MARUTI.NS",
+    "ASIANPAINT.NS",
+    "TITAN.NS",
+    "ULTRACEMCO.NS",
+    "NESTLEIND.NS",
+    "POWERGRID.NS",
+    "NTPC.NS",
+    "ONGC.NS",
+    "SUNPHARMA.NS",
+    "DRREDDY.NS",
+    "TECHM.NS",
+    "HCLTECH.NS",
+    "AXISBANK.NS",
+    "KOTAKBANK.NS",
+    "LT.NS",
+    "BHARTIARTL.NS",
+    "ADANIPORTS.NS",
+    "TATAMOTORS.NS",
+    "TATASTEEL.NS",
+    "COALINDIA.NS",
+]
+US_DEMO_TICKERS = [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "AMD",
+    "NFLX",
+    "JPM",
+    "V",
+    "MA",
+    "UNH",
+    "JNJ",
+    "WMT",
+    "COST",
+    "XOM",
+    "CVX",
+    "CRM",
+    "INTC",
+]
+PEER_GUIDE = [
+    {"Main ticker": "AAPL", "Peers": "MSFT, GOOGL, AMZN"},
+    {"Main ticker": "MSFT", "Peers": "AAPL, GOOGL, AMZN"},
+    {"Main ticker": "NVDA", "Peers": "AMD, INTC, MSFT"},
+    {"Main ticker": "TSLA", "Peers": "F, GM, RIVN"},
+    {"Main ticker": "TCS.NS", "Peers": "INFY.NS, WIPRO.NS, HCLTECH.NS, TECHM.NS"},
+    {"Main ticker": "HDFCBANK.NS", "Peers": "ICICIBANK.NS, AXISBANK.NS, KOTAKBANK.NS, SBIN.NS"},
+    {"Main ticker": "RELIANCE.NS", "Peers": "ONGC.NS, NTPC.NS, POWERGRID.NS, COALINDIA.NS"},
+    {"Main ticker": "SUNPHARMA.NS", "Peers": "DRREDDY.NS, CIPLA.NS, DIVISLAB.NS"},
+]
 FULL_TOOL_NAMES = {
     "get_stock_price",
     "get_fundamentals",
@@ -21,6 +108,14 @@ FULL_TOOL_NAMES = {
     "get_corporate_announcements",
     "compare_peers",
 }
+DASHBOARD_TABS = [
+    "📊 Research Report",
+    "💹 Price & Technicals",
+    "📋 Fundamentals",
+    "📰 News Sentiment",
+    "📁 Filing Analysis",
+    "🤖 Doc Q&A",
+]
 
 
 st.set_page_config(page_title="FinSight", page_icon="📈", layout="wide")
@@ -57,13 +152,55 @@ def _format_money(value: Any, currency: str = "") -> str:
     return f"{prefix}{_format_number(value)}"
 
 
-def _post(endpoint: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
-    response = requests.post(f"{API_BASE_URL}{endpoint}", json=payload, timeout=timeout)
-    response.raise_for_status()
+def _request(
+    method: str,
+    endpoint: str | None = None,
+    url: str | None = None,
+    timeout: int | None = None,
+    **kwargs: Any,
+) -> requests.Response:
+    if endpoint is not None:
+        url = f"{API_BASE_URL}{endpoint}"
+    if not url:
+        raise ValueError("Either endpoint or url must be provided")
+
+    effective_timeout = timeout or API_DEFAULT_TIMEOUT_SECONDS
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            response = _API_SESSION.request(method, url, timeout=effective_timeout, **kwargs)
+            response.raise_for_status()
+            return response
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt > API_RETRY_COUNT:
+                raise RuntimeError(f"Request timed out after {effective_timeout}s for {url}") from exc
+            time.sleep(API_RETRY_BACKOFF_SECONDS * attempt)
+            continue
+        except requests.HTTPError as exc:
+            if exc.response is not None:
+                raise RuntimeError(
+                    f"Request failed for {url}: {exc.response.status_code} {exc.response.text}"
+                ) from exc
+            raise RuntimeError(f"Request failed for {url}: {exc}") from exc
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Request failed for {url}: {exc}") from exc
+
+
+def _post(endpoint: str, payload: dict[str, Any], timeout: int | None = None) -> dict[str, Any]:
+    response = _request("POST", endpoint=endpoint, json=payload, timeout=timeout)
     body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError(f"Unexpected response body from {endpoint}")
     if not body.get("success", False):
         raise RuntimeError(body.get("error") or f"{endpoint} request failed")
     return body
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_rag_documents() -> list[str]:
+    response = _request("GET", endpoint="/rag/documents", timeout=30)
+    return response.json().get("documents") or []
 
 
 def _tool_data(endpoint: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -71,6 +208,83 @@ def _tool_data(endpoint: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         return _post(endpoint, payload).get("data")
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _start_research_thread(ticker: str, research_query: str) -> None:
+    thread = st.session_state.get("research_thread")
+    current_ticker = st.session_state.get("research_ticker")
+    if thread and getattr(thread, "is_alive", lambda: False)() and current_ticker == ticker:
+        return
+
+    def _research_task() -> None:
+        try:
+            research = _post("/research", {"query": research_query}, timeout=API_LONG_TIMEOUT_SECONDS)
+            st.session_state.research_result = research.get("data") or {}
+            st.session_state.research_complete = True
+            st.session_state.research_in_progress = False
+            st.session_state.research_error = None
+            st.session_state.research_started_at = datetime.now().isoformat(timespec="seconds")
+        except Exception as exc:
+            st.session_state.research_result = {
+                "final_analysis": f"Research agent unavailable: {exc}",
+                "confidence": "Low",
+                "error": str(exc),
+                "tools_called": [],
+                "price_data": None,
+                "fundamentals": None,
+                "sentiment": None,
+                "filing_summary": None,
+                "peer_comparison": None,
+            }
+            st.session_state.research_complete = True
+            st.session_state.research_in_progress = False
+            st.session_state.research_error = str(exc)
+
+    thread = threading.Thread(target=_research_task, daemon=True)
+    thread.start()
+    st.session_state.research_thread = thread
+    st.session_state.research_ticker = ticker
+    st.session_state.research_query = research_query
+    st.session_state.research_in_progress = True
+    st.session_state.research_complete = False
+
+
+def _merge_analysis_results(partial: dict[str, Any], research: dict[str, Any]) -> dict[str, Any]:
+    merged = {**partial}
+    merged["tools_called"] = sorted(
+        set((partial.get("tools_called") or []) + (research.get("tools_called") or []))
+    )
+    merged["price_data"] = research.get("price_data") or partial.get("price_data")
+    merged["fundamentals"] = research.get("fundamentals") or partial.get("fundamentals")
+    merged["sentiment"] = research.get("sentiment") or partial.get("sentiment")
+    merged["filing_summary"] = research.get("filing_summary") or partial.get("filing_summary")
+    merged["peer_comparison"] = research.get("peer_comparison") or partial.get("peer_comparison")
+    merged["final_analysis"] = research.get("final_analysis") or partial.get("final_analysis")
+    merged["confidence"] = research.get("confidence") or partial.get("confidence")
+    merged["latency_seconds"] = research.get("latency_seconds") or partial.get("latency_seconds")
+    merged["tokens_used"] = research.get("tokens_used") or partial.get("tokens_used")
+    if research.get("error"):
+        merged["error"] = research["error"]
+    merged["research_status"] = "complete"
+    return merged
+
+
+def _fetch_core_tool_data(ticker: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        price_future = executor.submit(_tool_data, "/tools/price", {"ticker": ticker})
+        fundamentals_future = executor.submit(_tool_data, "/tools/fundamentals", {"ticker": ticker})
+        return price_future.result(), fundamentals_future.result()
+
+
+def _fetch_auxiliary_tool_data(ticker: str, company_name: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        sentiment_future = executor.submit(
+            _tool_data,
+            "/tools/sentiment",
+            {"ticker": ticker, "company_name": company_name},
+        )
+        filing_future = executor.submit(_tool_data, "/tools/filings", {"ticker": ticker})
+        return sentiment_future.result(), filing_future.result()
 
 
 def _quick_report(ticker: str, price: dict[str, Any] | None, fundamentals: dict[str, Any] | None) -> str:
@@ -97,15 +311,13 @@ def _quick_report(ticker: str, price: dict[str, Any] | None, fundamentals: dict[
 """
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def run_analysis(ticker: str, mode: str) -> dict[str, Any]:
     start = time.perf_counter()
     ticker = _normalize_ticker(ticker)
 
-    price = _tool_data("/tools/price", {"ticker": ticker})
-    fundamentals = _tool_data("/tools/fundamentals", {"ticker": ticker})
-
     if mode == "Quick":
+        price = _tool_data("/tools/price", {"ticker": ticker})
+        fundamentals = _tool_data("/tools/fundamentals", {"ticker": ticker})
         return {
             "success": True,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -122,47 +334,57 @@ def run_analysis(ticker: str, mode: str) -> dict[str, Any]:
                 "confidence": "High" if not (price or {}).get("error") and not (fundamentals or {}).get("error") else "Medium",
                 "tokens_used": 0,
                 "latency_seconds": round(time.perf_counter() - start, 2),
+                "research_status": "complete",
             },
         }
+
+    price, fundamentals = _fetch_core_tool_data(ticker)
+    company_name = (fundamentals or {}).get("company_name") or ticker
+    sentiment, filing_summary = _fetch_auxiliary_tool_data(ticker, company_name)
 
     research_query = (
         f"Analyse {ticker} stock with a full research report. Include price and technicals, "
         "fundamentals, recent news sentiment, latest filings or corporate announcements, "
         "and peer comparison where available."
     )
-    try:
-        research = _post("/research", {"query": research_query}, timeout=180)
-        data = research.get("data") or {}
-    except Exception as exc:
-        data = {
-            "query": research_query,
-            "tickers_mentioned": [ticker],
-            "tools_called": [],
-            "final_analysis": f"Research agent unavailable: {exc}",
-            "confidence": "Low",
-            "tokens_used": 0,
-            "latency_seconds": round(time.perf_counter() - start, 2),
-            "error": str(exc),
+    _start_research_thread(ticker, research_query)
+
+    partial_data = {
+        "query": research_query,
+        "tickers_mentioned": [ticker],
+        "tools_called": ["get_stock_price", "get_fundamentals", "get_news_sentiment", "get_corporate_announcements"],
+        "price_data": price,
+        "fundamentals": fundamentals,
+        "sentiment": sentiment,
+        "filing_summary": filing_summary,
+        "peer_comparison": None,
+        "final_analysis": (
+            "Partial research is ready. Full agent synthesis is still running in the background. "
+            "Refresh the report when the full synthesis completes."
+        ),
+        "confidence": "Medium",
+        "tokens_used": 0,
+        "latency_seconds": round(time.perf_counter() - start, 2),
+        "research_status": "pending",
+    }
+
+    if (
+        st.session_state.get("research_ticker") == ticker
+        and st.session_state.get("research_complete")
+        and st.session_state.get("research_result")
+    ):
+        merged = _merge_analysis_results(partial_data, st.session_state.research_result)
+        merged["research_status"] = "complete"
+        return {
+            "success": True,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "data": merged,
         }
-
-    data["price_data"] = data.get("price_data") or price
-    data["fundamentals"] = data.get("fundamentals") or fundamentals
-    data["sentiment"] = data.get("sentiment") or _tool_data(
-        "/tools/sentiment",
-        {"ticker": ticker, "company_name": (fundamentals or {}).get("company_name") or ticker},
-    )
-    data["filing_summary"] = data.get("filing_summary") or _tool_data("/tools/filings", {"ticker": ticker})
-
-    tools_called = set(data.get("tools_called") or [])
-    tools_called.update(tool for tool in FULL_TOOL_NAMES if tool != "compare_peers")
-    data["tools_called"] = sorted(tools_called)
-    data["latency_seconds"] = data.get("latency_seconds") or round(time.perf_counter() - start, 2)
-    data["tokens_used"] = data.get("tokens_used") or 0
 
     return {
         "success": True,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "data": data,
+        "data": partial_data,
     }
 
 
@@ -192,13 +414,60 @@ def render_status_badge(label: str) -> None:
         render_badge(label, "gray")
 
 
+def render_ticker_peer_guide() -> None:
+    with st.sidebar.expander("Ticker & Peer Guide"):
+        st.caption("Best-supported demo tickers")
+        st.markdown("**India**")
+        st.code(", ".join(INDIAN_DEMO_TICKERS[:10]))
+        st.markdown("**US**")
+        st.code(", ".join(US_DEMO_TICKERS[:10]))
+
+        st.caption("Peer combinations")
+        st.dataframe(pd.DataFrame(PEER_GUIDE), width="stretch", hide_index=True)
+
+        st.caption("NSE expansion plan")
+        st.markdown(
+            "- Ingest NSE's official equity symbol CSV.\n"
+            "- Append `.NS` for Yahoo Finance price/fundamentals.\n"
+            "- Group companies by sector or industry for peer suggestions.\n"
+            "- Cache the ticker universe and refresh it daily or weekly."
+        )
+
+
 def render_error_note(data: dict[str, Any] | None) -> None:
     error = (data or {}).get("error")
     if error:
         st.warning(str(error), icon="⚠️")
 
 
+def _safe_rerun() -> None:
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+    else:
+        st.warning("Streamlit rerun is not available in this version. Please refresh the page manually.")
+
+
 def render_research_report(data: dict[str, Any]) -> None:
+    is_pending = data.get("research_status") == "pending"
+    background_done = st.session_state.get("research_complete") is True
+    if is_pending:
+        status_text = (
+            "Partial evidence is available while the full research synthesis is still running. "
+            "Press refresh to load the final report once it completes."
+        )
+        if background_done:
+            status_text = (
+                "Background research is complete. "
+                "Please refresh the report to view the final synthesis."
+            )
+        st.warning(status_text, icon="⏳")
+        if st.button("Refresh full report", key="refresh_full_report"):
+            _safe_rerun()
+    elif data.get("research_status") == "complete":
+        st.success("Full research synthesis is complete.", icon="✅")
+
     st.markdown(data.get("final_analysis") or "No research report returned yet.")
 
     st.divider()
@@ -428,6 +697,111 @@ def render_peer_comparison(ticker: str) -> None:
         st.info(peer_data["relative_valuation"])
 
 
+def render_doc_qa_tab() -> None:
+    st.subheader("Upload Annual Report or Earnings PDF")
+
+    file = st.file_uploader("Choose a PDF", type=["pdf"])
+    default_doc_id = file.name.replace(".pdf", "").replace(" ", "_") if file else ""
+    doc_id = st.text_input(
+        "Document ID",
+        value=default_doc_id,
+        help="Alphanumeric and underscores only. E.g. tcs_annual_2024",
+    )
+
+    if st.button("Ingest Document") and file and doc_id:
+        with st.spinner("📄 Extracting and embedding document..."):
+            try:
+                response = _request(
+                    "POST",
+                    url=f"{API_BASE_URL}/rag/ingest",
+                    data={"doc_id": doc_id},
+                    files={"file": (file.name, file.getvalue(), "application/pdf")},
+                    timeout=API_LONG_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                st.error(f"Upload failed: {exc}")
+            else:
+                data = response.json()
+                fetch_rag_documents.clear()
+                st.success(f"✅ Ready. {data['pages_extracted']} pages, {data['chunks_created']} chunks.")
+                if data.get("already_existed"):
+                    st.info("This document was already ingested. Using cached version.")
+
+    try:
+        docs = fetch_rag_documents()
+    except Exception as exc:
+        st.error(f"Could not load documents: {exc}")
+        docs = []
+
+    if not docs:
+        st.info(
+            """Upload an annual report PDF above to get started.
+Try the Reliance Industries FY2024 or TCS Q4 results PDF
+from their investor relations pages."""
+        )
+        return
+
+    st.subheader("Ask a Question")
+    selected_doc = st.selectbox("Select document", docs)
+    question = st.text_area(
+        "Your question",
+        placeholder="\n".join(
+            [
+                "What was the revenue for Q4?",
+                "What risks did management highlight?",
+                "What is the dividend policy?",
+                "How did margins change year over year?",
+            ]
+        ),
+        height=100,
+    )
+    k = st.slider("Sources to retrieve", 1, 10, 5)
+
+    if st.button("Ask") and question:
+        with st.spinner("🔍 Searching document..."):
+            try:
+                response = _request(
+                    "POST",
+                    url=f"{API_BASE_URL}/rag/query",
+                    json={"doc_id": selected_doc, "question": question, "k": k},
+                    timeout=API_LONG_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                st.error(f"Error: {exc}")
+            else:
+                data = response.json()
+                st.markdown("### Answer")
+                st.info(data["answer"])
+
+                with st.expander(f"📚 Sources ({len(data['sources'])} chunks used)"):
+                    for i, src in enumerate(data["sources"], 1):
+                        st.markdown(
+                            f"**Source {i}** — Pages {src['page_start']}–"
+                            f"{src['page_end']} "
+                            f"(similarity: {src['similarity']:.2f})"
+                        )
+                        st.caption(src["excerpt_preview"] + "...")
+
+                st.caption(
+                    f"Model: {data['model_used']} · "
+                    f"Tokens: {data['tokens_used']} · "
+                    f"Chunks retrieved: {data['chunks_used']}"
+                )
+
+    st.subheader("Manage Documents")
+    for doc in docs:
+        col1, col2 = st.columns([4, 1])
+        col1.text(doc)
+        if col2.button("Delete", key=f"del_{doc}"):
+            try:
+                _request("DELETE", endpoint=f"/rag/documents/{doc}", timeout=30)
+            except Exception as exc:
+                st.error(f"Could not delete {doc}: {exc}")
+            else:
+                fetch_rag_documents.clear()
+                st.rerun()
+
+
 def render_empty_state() -> None:
     st.title("FinSight")
     st.caption("AI-powered stock research in seconds")
@@ -458,6 +832,8 @@ def render_sidebar() -> tuple[str, str, bool]:
                     st.session_state.preset_ticker = preset
                     st.rerun()
 
+        render_ticker_peer_guide()
+
         mode = st.radio("Research mode", ["Quick", "Full"], horizontal=True)
         analyse = st.button("Analyse", type="primary", width="stretch")
         if st.button("Clear cache", width="stretch"):
@@ -477,12 +853,36 @@ def main() -> None:
         else:
             with st.spinner(f"🔍 Researching {ticker}..."):
                 st.session_state.analysis_result = run_analysis(ticker, mode)
+                st.session_state.analysis_ticker = ticker
+                st.session_state.analysis_mode = mode
                 st.session_state.last_ticker = ticker
                 st.session_state.last_mode = mode
+
+    if (
+        st.session_state.get("analysis_result")
+        and st.session_state.get("analysis_ticker") == ticker
+        and st.session_state.get("analysis_mode") == mode
+        and st.session_state.get("research_complete")
+        and st.session_state.analysis_result.get("data", {}).get("research_status") != "complete"
+    ):
+        st.session_state.analysis_result = run_analysis(ticker, mode)
 
     result = st.session_state.get("analysis_result")
     if not result:
         render_empty_state()
+        tabs = st.tabs(DASHBOARD_TABS)
+        with tabs[0]:
+            st.info("Run a stock analysis from the sidebar to populate the research dashboard.")
+        with tabs[1]:
+            st.info("Price and technical data will appear here after analysis.")
+        with tabs[2]:
+            st.info("Fundamentals will appear here after analysis.")
+        with tabs[3]:
+            st.info("News sentiment will appear here after analysis.")
+        with tabs[4]:
+            st.info("Filing analysis will appear here after analysis.")
+        with tabs[5]:
+            render_doc_qa_tab()
         return
 
     data = result.get("data") or {}
@@ -494,7 +894,7 @@ def main() -> None:
     time_col.caption(f"Last updated: {result.get('timestamp') or datetime.now().isoformat(timespec='seconds')}")
     time_col.caption(f"Mode: {active_mode}")
 
-    tabs = st.tabs(["📊 Research Report", "💹 Price & Technicals", "📋 Fundamentals", "📰 News Sentiment", "📁 Filing Analysis"])
+    tabs = st.tabs(DASHBOARD_TABS)
     with tabs[0]:
         render_research_report(data)
     with tabs[1]:
@@ -505,6 +905,8 @@ def main() -> None:
         render_sentiment_tab(data.get("sentiment"))
     with tabs[4]:
         render_filing_tab(data.get("filing_summary"))
+    with tabs[5]:
+        render_doc_qa_tab()
 
     if active_mode == "Full":
         render_peer_comparison(active_ticker)

@@ -3,16 +3,19 @@
 import json
 import logging
 import os
+import re
+import tempfile
 import time
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from finsight.agent.orchestrator import FinSightAgent, ResearchReport
@@ -21,6 +24,7 @@ from finsight.mcp_server.tools.fundamentals import get_fundamentals
 from finsight.mcp_server.tools.peers import compare_peers
 from finsight.mcp_server.tools.price import get_stock_price
 from finsight.mcp_server.tools.sentiment import get_news_sentiment
+from finsight.rag.pipeline import RAGPipeline
 
 
 logging.basicConfig(level=logging.INFO)
@@ -47,10 +51,40 @@ class ToolRequest(BaseModel):
     include_sentiment: Optional[bool] = False
 
 
+class RAGQueryRequest(BaseModel):
+    doc_id: str
+    question: str = Field(min_length=5, max_length=500)
+    k: int = Field(default=5, ge=1, le=10)
+
+
+class RAGSource(BaseModel):
+    text: str
+    page_start: int
+    page_end: int
+    similarity: float
+    retrieval_method: str
+    excerpt_preview: str
+
+
+class RAGResponse(BaseModel):
+    success: bool
+    doc_id: str
+    question: str
+    answer: str
+    citations: list[int]
+    sources: list[RAGSource]
+    model_used: str
+    tokens_used: int
+    chunks_used: int
+    error: Optional[str] = None
+
+
 # Rate limiting storage: ip -> list of timestamps
 rate_limit_store: Dict[str, List[float]] = defaultdict(list)
 RATE_LIMIT_REQUESTS = int(os.getenv("FINSIGHT_RATE_LIMIT_REQUESTS", "10"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("FINSIGHT_RATE_LIMIT_WINDOW_SECONDS", "60"))
+MAX_RAG_UPLOAD_BYTES = 20 * 1024 * 1024
+DOC_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -102,6 +136,7 @@ app.add_middleware(RateLimitMiddleware)
 
 # Initialize agent
 agent = FinSightAgent("/Users/Deadeye/Desktop/Projects/FinSight/finsight/mcp_server/server.py")
+rag_pipeline = RAGPipeline()
 
 
 def _format_error_response(request: Request, message: str, status_code: int) -> JSONResponse:
@@ -299,3 +334,122 @@ async def peers_tool_endpoint(request: ToolRequest, req: Request) -> Dict[str, A
             "request_id": req.state.request_id,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+
+
+def _validate_doc_id(doc_id: str) -> str:
+    doc_id = doc_id.strip()
+    if not doc_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="doc_id is required.")
+    if len(doc_id) > 50:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="doc_id must be 50 characters or fewer.")
+    if not DOC_ID_PATTERN.fullmatch(doc_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="doc_id must contain only letters, numbers, and underscores.",
+        )
+    return doc_id
+
+
+def _rag_sources(raw_sources: list[dict]) -> list[dict]:
+    sources = []
+    for source in raw_sources:
+        metadata = source.get("metadata") or {}
+        text = str(source.get("text") or "")
+        sources.append(
+            {
+                "text": text,
+                "page_start": int(metadata.get("page_start") or 0),
+                "page_end": int(metadata.get("page_end") or metadata.get("page_start") or 0),
+                "similarity": float(source.get("similarity") or 0.0),
+                "retrieval_method": str(source.get("retrieval_method") or "dense"),
+                "excerpt_preview": text[:300],
+            }
+        )
+    return sources
+
+
+@app.post("/rag/ingest")
+async def rag_ingest_endpoint(
+    file: UploadFile = File(...),
+    doc_id: str = Form(...),
+) -> Dict[str, Any]:
+    """Upload and ingest a PDF for document Q&A."""
+    doc_id = _validate_doc_id(doc_id)
+    filename = file.filename or ""
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file must be a PDF.")
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="content_type must be application/pdf.")
+
+    content = await file.read()
+    if len(content) > MAX_RAG_UPLOAD_BYTES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PDF must be 20MB or smaller.")
+
+    already_existed = rag_pipeline.vector_store.document_exists(doc_id)
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(content)
+            temp_path = tmp.name
+
+        result = rag_pipeline.ingest(temp_path, doc_id)
+        chunks_created = int(result.get("chunks_indexed", 0))
+        chunks = rag_pipeline._chunk_cache.get(doc_id, [])
+        tokens_estimated = sum(int(chunk.get("token_estimate") or 0) for chunk in chunks)
+        return {
+            "success": True,
+            "doc_id": doc_id,
+            "pages_extracted": int(result.get("pages_extracted", 0)),
+            "chunks_created": chunks_created,
+            "tokens_estimated": tokens_estimated,
+            "already_existed": already_existed,
+            "message": "Already ingested." if already_existed else "Ready to query.",
+        }
+    finally:
+        if temp_path:
+            Path(temp_path).unlink(missing_ok=True)
+
+
+@app.post("/rag/query", response_model=RAGResponse)
+async def rag_query_endpoint(request: RAGQueryRequest) -> RAGResponse:
+    """Ask a grounded question against an ingested PDF."""
+    doc_id = _validate_doc_id(request.doc_id)
+    if not rag_pipeline.vector_store.document_exists(doc_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found. Ingest it first.",
+        )
+
+    result = rag_pipeline.query(doc_id, request.question, k=request.k)
+    return RAGResponse(
+        success=True,
+        doc_id=doc_id,
+        question=request.question,
+        answer=result.get("answer") or "",
+        citations=result.get("citations") or [],
+        sources=[RAGSource(**source) for source in _rag_sources(result.get("sources") or [])],
+        model_used=str(result.get("model_used") or "unknown"),
+        tokens_used=int(result.get("tokens_used") or 0),
+        chunks_used=int(result.get("chunks_used") or result.get("chunks_retrieved") or 0),
+        error=result.get("error"),
+    )
+
+
+@app.get("/rag/documents")
+async def rag_documents_endpoint() -> Dict[str, list[str]]:
+    """List ingested RAG document IDs."""
+    return {"documents": rag_pipeline.vector_store.list_documents()}
+
+
+@app.delete("/rag/documents/{doc_id}")
+async def rag_delete_document_endpoint(doc_id: str) -> Dict[str, Any]:
+    """Delete an ingested RAG document."""
+    doc_id = _validate_doc_id(doc_id)
+    if not rag_pipeline.vector_store.document_exists(doc_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    rag_pipeline.vector_store.delete_document(doc_id)
+    rag_pipeline._chunk_cache.pop(doc_id, None)
+    rag_pipeline.retriever._bm25_index.pop(doc_id, None)
+    rag_pipeline.retriever._corpus.pop(doc_id, None)
+    return {"success": True, "message": "Deleted."}
