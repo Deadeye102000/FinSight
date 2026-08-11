@@ -4,5 +4,7 @@
 __pycache__/
 .pytest_cache/
 .env.example
-INTERVIEW.md
 .chroma/
+.coverage
+.DS_Store
+
