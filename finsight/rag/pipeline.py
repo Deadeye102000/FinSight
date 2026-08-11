@@ -47,6 +47,10 @@ class RAGPipeline:
         result["pages_extracted"] = len(pages)
         return result
 
+    def ingest(self, pdf_path: str, doc_id: str, **kwargs) -> dict:
+        """Compatibility wrapper for API callers."""
+        return self.ingest_pdf(pdf_path, doc_id, **kwargs)
+
     def ingest_chunks(self, doc_id: str, chunks: list[dict], batch_size: int = 32) -> dict:
         """Embed, store, and index already-created chunks."""
         if batch_size <= 0:
@@ -85,6 +89,9 @@ class RAGPipeline:
                 "citations": generated["citations"],
                 "sources": [],
                 "chunks_retrieved": 0,
+                "model_used": generated.get("model_used", "none"),
+                "tokens_used": generated.get("tokens_used", 0),
+                "chunks_used": generated.get("chunks_used", 0),
                 "error": generated.get("error"),
             }
 
@@ -104,6 +111,9 @@ class RAGPipeline:
             "citations": generated["citations"],
             "sources": sources,
             "chunks_retrieved": len(sources),
+            "model_used": generated.get("model_used", "unknown"),
+            "tokens_used": generated.get("tokens_used", 0),
+            "chunks_used": generated.get("chunks_used", len(sources)),
             "error": generated.get("error"),
         }
 

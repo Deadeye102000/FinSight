@@ -29,6 +29,7 @@ class RAGGenerator:
         self.openai_model = openai_model or os.getenv("OPENAI_MODEL") or "gpt-5"
         self._anthropic_client = anthropic_client
         self._openai_client = openai_client
+        self._last_tokens_used = 0
         self.system_prompt = (
             "You are FinSight's document-grounded RAG analyst. Answer only from the provided excerpts. "
             f"If the excerpts do not contain the answer, say exactly: \"{NOT_FOUND_ANSWER}\" "
@@ -50,6 +51,7 @@ class RAGGenerator:
 
         prompt = self._build_prompt(query, retrieved_chunks)
         error = None
+        self._last_tokens_used = 0
         try:
             if not self._provider_configured():
                 answer = self._extractive_fallback(retrieved_chunks)
@@ -67,6 +69,8 @@ class RAGGenerator:
             "answer": answer,
             "citations": self._extract_citations(answer),
             "chunks_used": len(retrieved_chunks),
+            "model_used": self.anthropic_model if self.llm_provider == "anthropic" else self.openai_model,
+            "tokens_used": self._last_tokens_used,
             "error": error,
         }
 
@@ -103,6 +107,11 @@ class RAGGenerator:
             system=self.system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self._last_tokens_used = int(getattr(usage, "input_tokens", 0) or 0) + int(
+                getattr(usage, "output_tokens", 0) or 0
+            )
         return "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
 
     def _generate_openai(self, prompt: str, max_tokens: int) -> str:
@@ -119,6 +128,12 @@ class RAGGenerator:
             input=prompt,
             max_output_tokens=max_tokens,
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            total = getattr(usage, "total_tokens", None)
+            self._last_tokens_used = int(total) if total is not None else int(
+                getattr(usage, "input_tokens", 0) or 0
+            ) + int(getattr(usage, "output_tokens", 0) or 0)
         output_text = getattr(response, "output_text", None)
         if output_text:
             return str(output_text)

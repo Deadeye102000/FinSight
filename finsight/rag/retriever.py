@@ -166,3 +166,59 @@ class HybridRetriever:
 
     def _key(self, text: str) -> str:
         return text[:60]
+
+
+def retrieve_relevant_filing_context(
+    ticker: str,
+    query: str,
+    k: int = 3,
+    persist_directory: str = ".chroma",
+) -> str:
+    """Retrieve relevant filing context chunks for a ticker from ChromaDB."""
+    try:
+        from finsight.rag.pipeline import RAGPipeline
+
+        pipeline = RAGPipeline(persist_directory=persist_directory)
+        normalized_doc = ticker.strip().upper().replace(".", "_")
+
+        doc_ids_to_try = [normalized_doc, ticker.strip().upper()]
+        selected_doc_id = None
+
+        for doc_id in doc_ids_to_try:
+            if pipeline.vector_store.document_exists(doc_id):
+                selected_doc_id = doc_id
+                break
+
+        if not selected_doc_id:
+            try:
+                existing_cols = pipeline.vector_store._client.list_collections()
+                for col in existing_cols:
+                    col_name = col.name if hasattr(col, "name") else str(col)
+                    if normalized_doc in col_name or ticker.strip().upper() in col_name:
+                        selected_doc_id = col_name
+                        break
+            except Exception:
+                pass
+
+        if not selected_doc_id:
+            return f"No filing context collection found in vector store for ticker '{ticker}'."
+
+        res = pipeline.query(doc_id=selected_doc_id, question=query, k=k)
+        sources = res.get("sources") or []
+        if not sources:
+            return f"No relevant filing excerpts matched query '{query}' for ticker '{ticker}'."
+
+        formatted_excerpts = []
+        for index, source in enumerate(sources, start=1):
+            text = str(source.get("text") or "").strip()
+            meta = source.get("metadata") or {}
+            page_start = meta.get("page_start", "?")
+            page_end = meta.get("page_end", "?")
+            doc_id = meta.get("doc_id", selected_doc_id)
+            formatted_excerpts.append(
+                f"[{index}] [Doc: {doc_id} | Pages {page_start}-{page_end}]\n{text}"
+            )
+
+        return "\n\n".join(formatted_excerpts)
+    except Exception as exc:
+        return f"Unable to retrieve filing context for '{ticker}': {exc}"
